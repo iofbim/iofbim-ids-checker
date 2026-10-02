@@ -26,13 +26,15 @@ const results: Record<string, SpecResult> = {
           { requirement: 'Attribute Name', expected: 'required', found: 'Wall, A' },
           { requirement: 'Material Concrete', expected: 'required', found: undefined },
         ],
+        checks: [],
       },
-      'm1:11': { uid: 'm1:11', ifcType: 'IFCWALL', name: 'Wall-043', failures: [] },
+      'm1:11': { uid: 'm1:11', ifcType: 'IFCWALL', name: 'Wall-043', failures: [], checks: [] },
     },
     cardinalitySatisfied: true,
     durationMs: 1,
+    requirements: [],
   },
-  s2: { specId: 's2', applicable: [], passed: [], failed: [], outcomes: {}, cardinalitySatisfied: true, durationMs: 0 },
+  s2: { specId: 's2', applicable: [], passed: [], failed: [], outcomes: {}, requirements: [], cardinalitySatisfied: true, durationMs: 0 },
 };
 
 describe('buildReportRows', () => {
@@ -71,6 +73,7 @@ describe('buildReportRows', () => {
         cardinalitySatisfied: false,
         cardinalityReason: 'Required, but no applicable entity found in the model.',
         durationMs: 0,
+        requirements: [],
       },
     };
     const rows = buildReportRows(cardDoc, cardResults);
@@ -119,6 +122,7 @@ describe('reportToHtml', () => {
           'm1:10': {
             uid: 'm1:10', ifcType: 'IFCWALL', name: '<script>x</script>',
             failures: [{ requirement: 'Attribute Name', expected: 'required', found: 'a & b' }],
+            checks: [],
           },
         },
         failed: ['m1:10'],

@@ -17,7 +17,7 @@
 
 import { getDb, awaitIngest } from '../db/client.js';
 import { facetToSql, facetToValueSql } from './facet-sql.js';
-import type { IdsSpecification, SpecResult, EntityOutcome, FailureReason, Uid } from './types.js';
+import type { IdsSpecification, SpecResult, EntityOutcome, FailureReason, Uid, RequirementCheck } from './types.js';
 
 const uid = (modelId: string, entityId: number): Uid => `${modelId}:${entityId}`;
 
@@ -55,19 +55,20 @@ export async function evaluateSpec(
           applicable.push(u);
 
           const failures: FailureReason[] = [];
+          const checks: RequirementCheck[] = [];
           spec.requirements.forEach((req, i) => {
             const ok = Boolean(row[`req${i}`]);
             const satisfied = req.cardinality === 'prohibited' ? !ok : req.cardinality === 'optional' ? true : ok;
-            if (!satisfied) {
-              // `val${i}` is only present when the facet has a scalar value.
-              const hasVal = `val${i}` in row;
-              const rawVal = row[`val${i}`];
-              failures.push({
-                requirement: reqLabels[i] ?? `requirement ${i}`,
-                expected: expectationText(req.cardinality),
-                found: hasVal ? (rawVal == null ? null : String(rawVal)) : undefined,
-              });
-            }
+            // `val${i}` is only present when the facet has a scalar value.
+            const hasVal = `val${i}` in row;
+            const rawVal = row[`val${i}`];
+            const reason: FailureReason = {
+              requirement: reqLabels[i] ?? `requirement ${i}`,
+              expected: expectationText(req.cardinality),
+              found: hasVal ? (rawVal == null ? null : String(rawVal)) : undefined,
+            };
+            checks.push({ ...reason, index: i, passed: satisfied });
+            if (!satisfied) failures.push(reason);
           });
 
           outcomes[u] = {
@@ -75,6 +76,7 @@ export async function evaluateSpec(
             ifcType: String(row['ifc_type'] ?? ''),
             name: row['name'] == null ? null : String(row['name']),
             failures,
+            checks,
           };
           if (failures.length === 0) passed.push(u);
           else failed.push(u);
@@ -97,6 +99,7 @@ export async function evaluateSpec(
     passed,
     failed,
     outcomes,
+    requirements: reqLabels,
     cardinalitySatisfied: card.satisfied,
     cardinalityReason: card.reason,
     durationMs: performance.now() - t0,

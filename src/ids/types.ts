@@ -185,6 +185,13 @@ export interface FailureReason {
   found?: string | null | undefined;
 }
 
+/** One requirement checked on one entity, passed or not. */
+export interface RequirementCheck extends FailureReason {
+  /** Index into {@link SpecResult.requirements} (and the spec's `requirements`). */
+  index: number;
+  passed: boolean;
+}
+
 /** Per-entity outcome within a specification. */
 export interface EntityOutcome {
   uid: Uid;
@@ -192,6 +199,8 @@ export interface EntityOutcome {
   name: string | null;
   /** Empty when the entity passed all requirements. */
   failures: FailureReason[];
+  /** Every requirement of the specification for this entity, in order (passed ones included). */
+  checks: RequirementCheck[];
 }
 
 /** Result of validating one specification against all loaded models. */
@@ -205,6 +214,8 @@ export interface SpecResult {
   failed: Uid[];
   /** Per-entity detail, keyed by uid, for the results list. */
   outcomes: Record<Uid, EntityOutcome>;
+  /** Requirement labels in the specification's order (the same text as `FailureReason.requirement`). */
+  requirements: string[];
   /**
    * Whether the specification's **own cardinality** is satisfied by the number
    * of applicable entities (required→≥1, prohibited→0, optional→always). This is
