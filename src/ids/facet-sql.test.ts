@@ -23,9 +23,9 @@ describe('restrictionToSql', () => {
     expect(restrictionToSql('e.ifc_type', { kind: 'enumeration', values: [] })).toEqual({ sql: '1=0', params: [] });
   });
 
-  it('pattern → regexp_matches, case-insensitive', () => {
+  it('pattern → regexp_full_match (anchored like XSD), case-insensitive', () => {
     const p = restrictionToSql('e.name', { kind: 'pattern', pattern: '^FD\\d+$' });
-    expect(p.sql).toBe("regexp_matches(e.name, ?, 'i')");
+    expect(p.sql).toBe("regexp_full_match(e.name, ?, 'i')");
     expect(p.params).toEqual(['^FD\\d+$']);
   });
 

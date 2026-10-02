@@ -70,7 +70,9 @@ export function restrictionToSql(
     }
 
     case 'pattern':
-      return { sql: `regexp_matches(${col}, ?, 'i')`, params: [restr.pattern] };
+      // XSD patterns are implicitly anchored: the whole value must match, not a substring
+      // ("ST-KRS-[^-]+" must reject "ST-KRS-BETON-C30"), so full match, not regexp_matches.
+      return { sql: `regexp_full_match(${col}, ?, 'i')`, params: [restr.pattern] };
 
     case 'bounds': {
       const target = numCol ?? `TRY_CAST(${col} AS DOUBLE)`;
