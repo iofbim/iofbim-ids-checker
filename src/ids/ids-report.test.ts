@@ -130,4 +130,12 @@ describe('reportToHtml', () => {
     expect(html).toContain('&lt;script&gt;');
     expect(html).toContain('a &amp; b');
   });
+
+  it('shows model display names when given, and the id otherwise', () => {
+    const named = buildReportRows(doc, results, { m1: 'house.ifc' });
+    expect(named.filter((r) => r.entityId === '10').every((r) => r.modelId === 'house.ifc')).toBe(true);
+    expect(buildReportRows(doc, results).find((r) => r.entityId === '10')?.modelId).toBe('m1');
+    expect(reportToCsv(doc, results, { m1: 'house.ifc' })).toContain('house.ifc');
+    expect(reportToHtml(doc, results, { m1: 'house.ifc' })).toContain('house.ifc');
+  });
 });

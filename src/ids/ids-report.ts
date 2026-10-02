@@ -26,6 +26,12 @@ export interface ReportRow {
   found: string;
 }
 
+/**
+ * Optional display names for model ids (e.g. model id → file name). Ids without a name are shown
+ * as they are.
+ */
+export type ModelNames = Readonly<Record<string, string>>;
+
 function splitUid(uid: string): { modelId: string; entityId: string } {
   const sep = uid.lastIndexOf(':');
   if (sep < 0) return { modelId: '', entityId: uid };
@@ -46,6 +52,7 @@ function foundText(found: string | null | undefined): string {
 export function buildReportRows(
   doc: IdsDocument,
   results: Record<string, SpecResult>,
+  modelNames: ModelNames = {},
 ): ReportRow[] {
   const rows: ReportRow[] = [];
   for (const spec of doc.specifications) {
@@ -71,7 +78,8 @@ export function buildReportRows(
     for (const uid of res.failed) {
       const o: EntityOutcome | undefined = res.outcomes[uid];
       if (!o) continue;
-      const { modelId, entityId } = splitUid(uid);
+      const { modelId: id, entityId } = splitUid(uid);
+      const modelId = modelNames[id] ?? id;
       for (const f of o.failures) {
         rows.push({
           specName: spec.name,
@@ -108,8 +116,8 @@ const CSV_HEADERS = [
   'Found',
 ] as const;
 
-export function reportToCsv(doc: IdsDocument, results: Record<string, SpecResult>): string {
-  const rows = buildReportRows(doc, results);
+export function reportToCsv(doc: IdsDocument, results: Record<string, SpecResult>, modelNames: ModelNames = {}): string {
+  const rows = buildReportRows(doc, results, modelNames);
   const lines = [CSV_HEADERS.join(',')];
   for (const r of rows) {
     lines.push(
@@ -132,7 +140,7 @@ function esc(s: string): string {
 }
 
 /** Standalone, printable HTML report grouped spec → failed entity → failures. */
-export function reportToHtml(doc: IdsDocument, results: Record<string, SpecResult>): string {
+export function reportToHtml(doc: IdsDocument, results: Record<string, SpecResult>, modelNames: ModelNames = {}): string {
   const generated = new Date().toISOString().slice(0, 19).replace('T', ' ');
 
   const specBlocks = doc.specifications
@@ -174,7 +182,8 @@ export function reportToHtml(doc: IdsDocument, results: Record<string, SpecResul
         .map((uid) => {
           const o = res.outcomes[uid];
           if (!o) return '';
-          const { modelId, entityId } = splitUid(uid);
+          const { modelId: id, entityId } = splitUid(uid);
+          const modelId = modelNames[id] ?? id;
           const failRows = o.failures
             .map(
               (f) => `<tr>
