@@ -30,7 +30,7 @@
     "apache-arrow": "^21.1.0",
     "jsdom": "^29.1.1",
     "typescript": "^5.4.5",
-    "vitest": "^1.6.0",
+    "vitest": "^4.1.11",
     "web-ifc": "^0.0.77"
   }
 }
