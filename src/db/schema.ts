@@ -1,0 +1,211 @@
+import type * as duckdb from '@duckdb/duckdb-wasm';
+
+export const DDL = `
+CREATE TABLE IF NOT EXISTS entities (
+  model_id            VARCHAR NOT NULL,
+  entity_id           INTEGER NOT NULL,
+  ifc_type            VARCHAR NOT NULL,
+  name                VARCHAR,
+  global_id           VARCHAR,   -- raw authored GlobalId (22-char or expanded)
+  global_id_canonical VARCHAR,   -- normalized lowercase hyphenated GUID (PC C2.1)
+  description         VARCHAR,
+  object_type         VARCHAR,
+  tag                 VARCHAR,
+  predefined_type     VARCHAR,
+  long_name           VARCHAR,
+  identification      VARCHAR,
+  -- World-space axis-aligned bounding box (metres), meshed at parse time.
+  -- NULL for non-physical entities that produced no geometry. Powers the
+  -- spatial query filters (proximity / elevation / bounding box).
+  bbox_min_x          DOUBLE,
+  bbox_min_y          DOUBLE,
+  bbox_min_z          DOUBLE,
+  bbox_max_x          DOUBLE,
+  bbox_max_y          DOUBLE,
+  bbox_max_z          DOUBLE,
+  -- Tessellated mesh statistics from the same parse-time mesh stream as the
+  -- bbox. NULL for entities that produced no geometry (same population as the
+  -- bbox columns), so "no geometry" and "meshed to zero vertices" stay
+  -- distinguishable: the latter is 0, not NULL, and is a real health signal.
+  -- These are render-cost figures, not authored BREP point counts.
+  vertex_count        INTEGER,
+  triangle_count      INTEGER,
+  -- Vertex count with each distinct source mesh counted once, so an element
+  -- instancing one geometry N times is not inflated N-fold.
+  unique_vertex_count INTEGER,
+  mesh_part_count     INTEGER,
+  PRIMARY KEY (model_id, entity_id)
+);
+-- Heaviest-element and geometry-outlier queries scan on this ordering.
+CREATE INDEX IF NOT EXISTS idx_entities_verts ON entities (model_id, vertex_count);
+-- Federation/diff match key — entities sharing a canonical GlobalId across
+-- models are the same real-world thing (ADR-008).
+CREATE INDEX IF NOT EXISTS idx_entities_guid ON entities (global_id_canonical);
+
+CREATE TABLE IF NOT EXISTS triples (
+  model_id  VARCHAR  NOT NULL,
+  subject   INTEGER  NOT NULL,
+  predicate VARCHAR  NOT NULL,
+  object    INTEGER  NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_triples_subj ON triples (model_id, subject);
+CREATE INDEX IF NOT EXISTS idx_triples_obj  ON triples (model_id, object);
+
+CREATE TABLE IF NOT EXISTS pset_properties (
+  model_id      VARCHAR NOT NULL,
+  entity_id     INTEGER NOT NULL,
+  pset_name     VARCHAR NOT NULL,
+  property_name VARCHAR NOT NULL,
+  value         VARCHAR,           -- authored value as text (always present)
+  value_num     DOUBLE,            -- authored value as a number, when numeric
+  value_si      DOUBLE,            -- value normalized to SI base units (PB-B)
+  unit          VARCHAR            -- resolved authored unit label, e.g. MILLIMETRE
+);
+CREATE INDEX IF NOT EXISTS idx_pset ON pset_properties (model_id, entity_id);
+CREATE INDEX IF NOT EXISTS idx_pset_name ON pset_properties (model_id, pset_name, property_name);
+
+-- Every direct STEP attribute of a non-IfcRel entity, in schema order, as text.
+-- The entities table only materializes the curated Tier-1 columns (name, tag,
+-- predefined_type, …); IDS attribute facets can reference ANY schema attribute
+-- (IfcPerson.FamilyName, IfcOrganization.Roles, …), so those live here. Without
+-- this table an attribute facet on a non-Tier-1 name is always-false → every
+-- applicable entity is a false-negative failure.
+CREATE TABLE IF NOT EXISTS entity_attributes (
+  model_id   VARCHAR NOT NULL,
+  entity_id  INTEGER NOT NULL,
+  attr_name  VARCHAR NOT NULL,   -- schema attribute name, e.g. "FamilyName"
+  value      VARCHAR             -- decoded display value; NULL for $ / * / empty
+);
+CREATE INDEX IF NOT EXISTS idx_entity_attr ON entity_attributes (model_id, entity_id, attr_name);
+
+-- classifications / materials / documents are DERIVED views over triples ⋈
+-- entities, not materialized tables (ADR-016.1). Each is a one-hop walk whose
+-- values (system/code/name/title/location) all live on the entities table, so
+-- expressing the traversal as a join means it can never silently drop a
+-- predicate path the way a hand walk can. The base tables carry (model_id,
+-- subject/object) indexes, so these joins are indexed. Views need no snapshot —
+-- they rebuild from entities/triples on reload.
+--
+-- The IfcRelAssociates* rel-entity is NOT a node in triples: the extractor
+-- collapses it to a direct edge subject=decorated element, object=reference
+-- (see extractor.ts). So each view is a single subject→object hop, joined to
+-- entities on the object for the reference's scalar fields. The reference type
+-- is filtered so an unrelated same-predicate edge cannot leak in.
+
+CREATE VIEW IF NOT EXISTS classifications AS
+SELECT t.model_id                            AS model_id,
+       t.subject                             AS entity_id,
+       COALESCE(refe.name, '')               AS system,
+       COALESCE(refe.identification, '')     AS code
+FROM triples t
+JOIN entities refe ON refe.model_id = t.model_id AND refe.entity_id = t.object
+WHERE t.predicate = 'IfcRelAssociatesClassification'
+  AND upper(refe.ifc_type) LIKE '%CLASSIFICATION%'
+  AND (refe.name IS NOT NULL OR refe.identification IS NOT NULL);
+
+-- material_entity_id is the STEP express id of the material entity the name
+-- came from — NOT a UUID and NOT stable across re-exports. It is carried purely
+-- as a join key so a probe can walk one further hop, material →
+-- hasMaterialClassification → classification reference, to reach an external
+-- environmental-dataset identifier. An IfcMaterial is not an IfcRoot subtype
+-- and so has no GlobalId; the attached classification is the only place a
+-- durable identifier can live. Additive column — existing consumers select
+-- "name" or use EXISTS and are unaffected.
+CREATE VIEW IF NOT EXISTS materials AS
+-- Direct: element → IfcRelAssociatesMaterial → material entity
+SELECT t.model_id                            AS model_id,
+       t.subject                             AS entity_id,
+       COALESCE(m.name, m.ifc_type)          AS name,
+       m.entity_id                           AS material_entity_id
+FROM triples t
+JOIN entities m ON m.model_id = t.model_id AND m.entity_id = t.object
+WHERE t.predicate = 'IfcRelAssociatesMaterial'
+  AND upper(m.ifc_type) LIKE '%MATERIAL%'
+UNION ALL
+-- Leaf: material → hasMaterial → constituent/layer material (named leaf)
+SELECT t.model_id                            AS model_id,
+       t.subject                             AS entity_id,
+       leaf.name                             AS name,
+       leaf.entity_id                        AS material_entity_id
+FROM triples t
+JOIN triples hm ON hm.model_id = t.model_id AND hm.subject = t.object AND hm.predicate = 'hasMaterial'
+JOIN entities leaf ON leaf.model_id = hm.model_id AND leaf.entity_id = hm.object
+WHERE t.predicate = 'IfcRelAssociatesMaterial'
+  AND leaf.name IS NOT NULL;
+
+-- Material → external classification reference (the environmental-dataset link).
+--
+-- Both schema spellings are unioned because the extractor emits the same
+-- "hasMaterialClassification" predicate from the relationship node in each, but
+-- the node sits between material and reference differently:
+--
+--   IFC2x3  relationship --hasMaterialClassification--> reference
+--           relationship --references--> material          (generic fallback)
+--   IFC4    relationship --hasMaterialClassification--> reference
+--           relationship --references--> material          (list arg[3])
+--
+-- so in both cases the material and the reference are siblings hanging off the
+-- same relationship node, and the join is a self-join on that node.
+CREATE VIEW IF NOT EXISTS material_classifications AS
+SELECT mc.model_id                           AS model_id,
+       mat.entity_id                         AS material_entity_id,
+       COALESCE(refe.name, '')               AS system,
+       COALESCE(refe.identification, '')     AS code
+FROM triples mc
+JOIN entities refe
+  ON refe.model_id = mc.model_id AND refe.entity_id = mc.object
+JOIN triples sib
+  ON sib.model_id = mc.model_id AND sib.subject = mc.subject
+JOIN entities mat
+  ON mat.model_id = sib.model_id AND mat.entity_id = sib.object
+WHERE mc.predicate = 'hasMaterialClassification'
+  AND upper(refe.ifc_type) LIKE '%CLASSIFICATION%'
+  AND upper(mat.ifc_type) LIKE '%MATERIAL%'
+  AND (refe.name IS NOT NULL OR refe.identification IS NOT NULL);
+
+CREATE VIEW IF NOT EXISTS documents AS
+SELECT t.model_id                            AS model_id,
+       t.subject                             AS entity_id,
+       doc.name                              AS title,
+       doc.identification                    AS location
+FROM triples t
+JOIN entities doc ON doc.model_id = t.model_id AND doc.entity_id = t.object
+WHERE t.predicate = 'IfcRelAssociatesDocument'
+  AND upper(doc.ifc_type) LIKE '%DOCUMENT%';
+
+-- Federation overlay tables (PC C2.2). These are NOT per-model — they are a
+-- whole-tree mirror of the store's reparentOps/sameAsOps arrays, truncated and
+-- rewritten wholesale by syncFederationToDb whenever those arrays change. The
+-- store arrays remain authoritative for editing/persistence; DuckDB is the
+-- queryable + resolvable mirror (ADR-008).
+CREATE TABLE IF NOT EXISTS reparent_ops (
+  id                VARCHAR,
+  node_model_id     VARCHAR,
+  node_entity_id    INTEGER,
+  parent_model_id   VARCHAR,
+  parent_entity_id  INTEGER
+);
+CREATE TABLE IF NOT EXISTS sameas_members (
+  op_id      VARCHAR,
+  model_id   VARCHAR,
+  entity_id  INTEGER,
+  ifc_type   VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_sameas_member ON sameas_members (model_id, entity_id);
+`;
+
+// Only the materialized base/projection tables are deleted per-model.
+// classifications/materials/documents are views (ADR-016.1) — deleting their
+// base rows (entities/triples) empties them automatically.
+export const MATERIALIZED_TABLES = ['entities', 'triples', 'pset_properties', 'entity_attributes'] as const;
+
+export const DROP_MODEL_SQL = `
+DELETE FROM entities          WHERE model_id = ?;
+DELETE FROM triples           WHERE model_id = ?;
+DELETE FROM pset_properties   WHERE model_id = ?;
+DELETE FROM entity_attributes WHERE model_id = ?;
+`;
+
+export async function initSchema(conn: duckdb.AsyncDuckDBConnection): Promise<void> {
+  await conn.query(DDL);
+}

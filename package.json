@@ -1,0 +1,36 @@
+{
+  "name": "@iofbim/ids-checker",
+  "version": "0.1.0",
+  "description": "Check IFC models against buildingSMART IDS in the browser (web-ifc + DuckDB-WASM). Shared by IofBIM IFC Graph and the IDS authoring tool.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./parser/*": "./src/parser/*",
+    "./db/*": "./src/db/*",
+    "./ids/*": "./src/ids/*",
+    "./config": "./src/config.ts",
+    "./check": "./src/check.ts"
+  },
+  "bin": {
+    "ids-checker-copy-assets": "./scripts/copy-assets.mjs"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@duckdb/duckdb-wasm": "^1.33.1-dev45.0",
+    "apache-arrow": "^21.1.0",
+    "web-ifc": "^0.0.77"
+  },
+  "devDependencies": {
+    "@duckdb/duckdb-wasm": "^1.33.1-dev45.0",
+    "apache-arrow": "^21.1.0",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0",
+    "web-ifc": "^0.0.77"
+  }
+}
