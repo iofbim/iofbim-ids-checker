@@ -10,6 +10,7 @@
  * {@link evaluateSpec} in evaluate-ids.ts assembles and runs the SQL.
  */
 
+import { xsdToRe2 } from './xsd-regex.js';
 import type {
   IdsFacet,
   IdsValueRestriction,
@@ -72,7 +73,8 @@ export function restrictionToSql(
     case 'pattern':
       // XSD patterns are implicitly anchored: the whole value must match, not a substring
       // ("ST-KRS-[^-]+" must reject "ST-KRS-BETON-C30"), so full match, not regexp_matches.
-      return { sql: `regexp_full_match(${col}, ?, 'i')`, params: [restr.pattern] };
+      // RE2 has no XSD class subtraction ("[\p{L}-[_]]"): such classes are spelled out
+      return { sql: `regexp_full_match(${col}, ?, 'i')`, params: [xsdToRe2(restr.pattern)] };
 
     case 'bounds': {
       const target = numCol ?? `TRY_CAST(${col} AS DOUBLE)`;
