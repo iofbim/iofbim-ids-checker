@@ -57,7 +57,7 @@ describe('restrictionToSql', () => {
 });
 
 describe('facetToSql', () => {
-  it('entity facet with predefined type ANDs both columns', () => {
+  it('entity facet with predefined type resolves it through the IfcRelDefinesByType type', () => {
     const facet: IdsFacet = {
       kind: 'entity',
       name: { kind: 'simpleValue', value: 'IFCWALL' },
@@ -65,8 +65,16 @@ describe('facetToSql', () => {
     };
     const p = facetToSql(facet);
     expect(p.sql).toContain('e.ifc_type = ?');
-    expect(p.sql).toContain('e.predefined_type = ?');
-    expect(p.params).toEqual(['IFCWALL', 'SOLIDWALL']);
+    // The value comes from the related type when the type defines one …
+    expect(p.sql).toContain("dt.predicate = 'IfcRelDefinesByType'");
+    expect(p.sql).toContain('dt.object = e.entity_id');
+    expect(p.sql).toContain("upper(ty.predefined_type) <> 'NOTDEFINED'");
+    // … and USERDEFINED falls back to the user-supplied type string.
+    expect(p.sql).toContain('FROM entity_attributes ea');
+    expect(p.sql).toContain("'objecttype', 'elementtype', 'processtype', 'resourcetype'");
+    expect(p.sql).toContain("= 'USERDEFINED'");
+    // name, then the enum and the user string are each bound once.
+    expect(p.params).toEqual(['IFCWALL', 'SOLIDWALL', 'SOLIDWALL']);
   });
 
   it('non-Tier-1 attribute → EXISTS over entity_attributes, name bound', () => {
@@ -149,6 +157,16 @@ describe('facetToSql', () => {
     expect(p.params).toEqual([]);
   });
 
+  it('material facet with a value → name OR category match', () => {
+    const p = facetToSql({
+      kind: 'material',
+      value: { kind: 'simpleValue', value: 'Foo' },
+    });
+    expect(p.sql).toContain('mat.name = ?');
+    expect(p.sql).toContain('mat.category = ?');
+    expect(p.params).toEqual(['Foo', 'Foo']);
+  });
+
   it('partOf facet → transitive whole→part walk, entity is the part (object side only)', () => {
     const facet: IdsFacet = {
       kind: 'partOf',
@@ -190,7 +208,7 @@ describe('facetToSql', () => {
     };
     const p = facetToSql(facet);
     expect(p.sql).toContain(
-      "((lower(w.predefined_type) = lower(?)) OR (upper(w.predefined_type) = 'USERDEFINED' AND (lower(w.object_type) = lower(?))))",
+      "((w.predefined_type = ?) OR (upper(w.predefined_type) = 'USERDEFINED' AND (w.object_type = ?)))",
     );
     // First depth: relation, whole type, then enum + ObjectType value.
     expect(p.params.slice(0, 4)).toEqual([

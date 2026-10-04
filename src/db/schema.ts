@@ -173,35 +173,95 @@ WHERE dt.predicate = 'IfcRelDefinesByType'
     WHERE o.model_id = dt.model_id AND o.entity_id = dt.object AND o.system = ty.system
   );
 
--- material_entity_id is the STEP express id of the material entity the name
--- came from — NOT a UUID and NOT stable across re-exports. It is carried purely
--- as a join key so a probe can walk one further hop, material →
+-- material_entity_id is the STEP express id of the material-related node the
+-- name/category came from — NOT a UUID and NOT stable across re-exports. It is
+-- carried purely as a join key so a probe can walk one further hop, material →
 -- hasMaterialClassification → classification reference, to reach an external
 -- environmental-dataset identifier. An IfcMaterial is not an IfcRoot subtype
 -- and so has no GlobalId; the attached classification is the only place a
--- durable identifier can live. Additive column — existing consumers select
--- "name" or use EXISTS and are unaffected.
+-- durable identifier can live.
+--
+-- IDS material values match any Material/Layer/Profile/Constituent Name *or*
+-- Category, and the value may live on the set itself (IfcMaterialLayerSet.
+-- LayerSetName), a set member, or the IfcMaterial leaf. So the view descends
+-- element → (association, direct or inherited from the element's type) →
+-- list/set/usage → member → material and emits one row per reached node with
+-- both its name and its category. The descent is unrolled to a fixed depth (a
+-- recursive CTE cannot be bound in a view referenced from a correlated EXISTS,
+-- see above).
 CREATE VIEW IF NOT EXISTS materials AS
--- Direct: element → IfcRelAssociatesMaterial → material entity
-SELECT t.model_id                            AS model_id,
-       t.subject                             AS entity_id,
-       COALESCE(m.name, m.ifc_type)          AS name,
-       m.entity_id                           AS material_entity_id
-FROM triples t
-JOIN entities m ON m.model_id = t.model_id AND m.entity_id = t.object
-WHERE t.predicate = 'IfcRelAssociatesMaterial'
-  AND upper(m.ifc_type) LIKE '%MATERIAL%'
-UNION ALL
--- Leaf: material → hasMaterial → constituent/layer material (named leaf)
-SELECT t.model_id                            AS model_id,
-       t.subject                             AS entity_id,
-       leaf.name                             AS name,
-       leaf.entity_id                        AS material_entity_id
-FROM triples t
-JOIN triples hm ON hm.model_id = t.model_id AND hm.subject = t.object AND hm.predicate = 'hasMaterial'
-JOIN entities leaf ON leaf.model_id = hm.model_id AND leaf.entity_id = hm.object
-WHERE t.predicate = 'IfcRelAssociatesMaterial'
-  AND leaf.name IS NOT NULL;
+WITH assoc AS (
+  -- element → material node, direct …
+  SELECT t.model_id, t.subject AS entity_id, t.object AS node
+  FROM triples t
+  WHERE t.predicate = 'IfcRelAssociatesMaterial'
+  UNION
+  -- … plus the material of the element's type (IfcRelDefinesByType is stored
+  -- subject = type, object = occurrence), unless the element carries its own
+  -- association, which overrides the type's.
+  SELECT dt.model_id, dt.object AS entity_id, t.object AS node
+  FROM triples dt
+  JOIN triples t
+    ON t.model_id = dt.model_id AND t.subject = dt.subject
+   AND t.predicate = 'IfcRelAssociatesMaterial'
+  WHERE dt.predicate = 'IfcRelDefinesByType'
+    AND NOT EXISTS (
+      SELECT 1 FROM triples own
+      WHERE own.model_id = dt.model_id AND own.subject = dt.object
+        AND own.predicate = 'IfcRelAssociatesMaterial'
+    )
+),
+-- IfcMaterial*SetUsage → the set it references (ForLayerSet / ForProfileSet).
+assoc_set AS (
+  SELECT a.model_id, a.entity_id, COALESCE(u.object, a.node) AS node
+  FROM assoc a
+  LEFT JOIN triples u
+    ON u.model_id = a.model_id AND u.subject = a.node
+   AND u.predicate IN ('hasMaterialLayerSet', 'hasMaterialProfileSet')
+),
+-- set/list → member (IfcMaterialLayer / Constituent / Profile, or IfcMaterial).
+members AS (
+  SELECT s.model_id, s.entity_id, hm.object AS node
+  FROM assoc_set s
+  JOIN triples hm
+    ON hm.model_id = s.model_id AND hm.subject = s.node
+   AND hm.predicate IN ('hasMaterialLayer', 'hasMaterialConstituent',
+                        'hasMaterialProfile', 'hasMaterial')
+),
+-- member → IfcMaterial leaf.
+leaves AS (
+  SELECT m.model_id, m.entity_id, hm.object AS node
+  FROM members m
+  JOIN triples hm
+    ON hm.model_id = m.model_id AND hm.subject = m.node
+   AND hm.predicate = 'hasMaterial'
+),
+related AS (
+  SELECT model_id, entity_id, node FROM assoc_set
+  UNION SELECT model_id, entity_id, node FROM members
+  UNION SELECT model_id, entity_id, node FROM leaves
+)
+SELECT DISTINCT
+  r.model_id                        AS model_id,
+  r.entity_id                       AS entity_id,
+  r.node                            AS material_entity_id,
+  -- The node's Name, or a layer set's LayerSetName (IfcMaterialLayerSet has no
+  -- Name attribute). entity_attributes holds both; entities.name is the
+  -- curated Tier-1 column and the fallback when the side table is absent.
+  COALESCE(
+    NULLIF((SELECT ea.value FROM entity_attributes ea
+             WHERE ea.model_id = r.model_id AND ea.entity_id = r.node
+               AND lower(ea.attr_name) IN ('name', 'layersetname')
+             LIMIT 1), ''),
+    e.name
+  )                                 AS name,
+  -- Category (IfcMaterial / Layer / Profile / Constituent).
+  NULLIF((SELECT ea.value FROM entity_attributes ea
+           WHERE ea.model_id = r.model_id AND ea.entity_id = r.node
+             AND lower(ea.attr_name) = 'category'
+           LIMIT 1), '')            AS category
+FROM related r
+JOIN entities e ON e.model_id = r.model_id AND e.entity_id = r.node;
 
 -- Material → external classification reference (the environmental-dataset link).
 --

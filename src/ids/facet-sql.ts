@@ -182,13 +182,74 @@ export function facetAnchorSql(facet: IdsFacet): SqlPredicate {
   }
 }
 
+/**
+ * SQL scalar: the entity that supplies the IDS predefined type for `alias`.
+ *
+ * Per UserManual/entity-facet.md a typed occurrence takes the value from its
+ * IfcTypeObject when that type defines one; a type "defines" a predefined type
+ * when its PredefinedType is set and not NOTDEFINED (USERDEFINED counts — the
+ * value is then its ElementType/ProcessType/ResourceType). When the type leaves
+ * it undefined (or there is no type) the value comes from the occurrence, which
+ * is how an occurrence "overrides" the type. The extractor stores
+ * IfcRelDefinesByType as (subject = type, object = occurrence).
+ */
+function predefinedTypeSourceIdSql(alias: string): string {
+  return `COALESCE(
+    (SELECT dt.subject FROM triples dt
+     JOIN entities ty ON ty.model_id = dt.model_id AND ty.entity_id = dt.subject
+     WHERE dt.model_id = ${alias}.model_id
+       AND dt.predicate = 'IfcRelDefinesByType'
+       AND dt.object = ${alias}.entity_id
+       AND ty.predefined_type IS NOT NULL
+       AND upper(ty.predefined_type) <> 'NOTDEFINED'
+     LIMIT 1),
+    ${alias}.entity_id)`;
+}
+
+/** SQL scalar: the resolved PredefinedType enum value for `alias`. */
+function resolvedPredefinedTypeSql(alias: string): string {
+  return `(SELECT s.predefined_type FROM entities s
+    WHERE s.model_id = ${alias}.model_id
+      AND s.entity_id = ${predefinedTypeSourceIdSql(alias)})`;
+}
+
+/**
+ * SQL scalar: the resolved user-defined type string for `alias` — the
+ * `ObjectType` of an occurrence, or the `ElementType` / `ProcessType` /
+ * `ResourceType` of a type object (all live in the `entity_attributes` side
+ * table, not in the `object_type` column).
+ */
+function resolvedUserDefinedTypeSql(alias: string): string {
+  return `(SELECT ea.value FROM entity_attributes ea
+    WHERE ea.model_id = ${alias}.model_id
+      AND ea.entity_id = ${predefinedTypeSourceIdSql(alias)}
+      AND lower(ea.attr_name) IN ('objecttype', 'elementtype', 'processtype', 'resourcetype')
+      AND ea.value IS NOT NULL AND ea.value <> ''
+    LIMIT 1)`;
+}
+
+/**
+ * Entity facet: the entity class AND, when a predefinedType restriction is
+ * present, its resolved predefined type. When the resolved enum is USERDEFINED
+ * both the literal `USERDEFINED` and the user-supplied type string are
+ * acceptable (UserManual/entity-facet.md "Examples of interpering IFC
+ * Predefined Types").
+ */
 function entitySql(facet: EntityFacet): SqlPredicate {
   const namePred = restrictionToSql('e.ifc_type', facet.name);
   if (!facet.predefinedType) return namePred;
-  const pt = restrictionToSql('e.predefined_type', facet.predefinedType);
+
+  const enumVal = resolvedPredefinedTypeSql('e');
+  const userVal = resolvedUserDefinedTypeSql('e');
+  const onEnum = restrictionToSql(enumVal, facet.predefinedType);
+  const onUser = restrictionToSql(userVal, facet.predefinedType);
   return {
-    sql: `(${namePred.sql}) AND (${pt.sql})`,
-    params: [...namePred.params, ...pt.params],
+    sql:
+      `(${namePred.sql}) AND (` +
+      `(${onEnum.sql})` +
+      ` OR (upper(${enumVal}) = 'USERDEFINED' AND ${userVal} IS NOT NULL AND (${onUser.sql}))` +
+      `)`,
+    params: [...namePred.params, ...onEnum.params, ...onUser.params],
   };
 }
 
@@ -327,9 +388,13 @@ function materialSql(facet: MaterialFacet): SqlPredicate {
   const parts: string[] = ['mat.model_id = e.model_id', 'mat.entity_id = e.entity_id'];
   const params: unknown[] = [];
   if (facet.value) {
-    const v = restrictionToSql('mat.name', facet.value);
-    parts.push(`(${v.sql})`);
-    params.push(...v.params);
+    // An IDS material value matches any Material/Layer/Profile/Constituent
+    // Name *or* Category (material-facet.md), so test the view's name and
+    // category columns.
+    const byName = restrictionToSql('mat.name', facet.value);
+    const byCategory = restrictionToSql('mat.category', facet.value);
+    parts.push(`((${byName.sql}) OR (${byCategory.sql}))`);
+    params.push(...byName.params, ...byCategory.params);
   }
   return {
     sql: `EXISTS (SELECT 1 FROM materials mat WHERE ${parts.join(' AND ')})`,
