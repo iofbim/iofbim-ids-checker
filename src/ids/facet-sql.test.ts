@@ -149,16 +149,53 @@ describe('facetToSql', () => {
     expect(p.params).toEqual([]);
   });
 
-  it('partOf facet → OR of both edge directions', () => {
+  it('partOf facet → transitive whole→part walk, entity is the part (object side only)', () => {
     const facet: IdsFacet = {
       kind: 'partOf',
       relation: 'IFCRELAGGREGATES',
       entity: { kind: 'entity', name: { kind: 'simpleValue', value: 'IFCBUILDINGSTOREY' } },
     };
     const p = facetToSql(facet);
-    // Both directions present, relation bound twice, whole-type bound twice.
-    expect((p.sql.match(/EXISTS/g) ?? []).length).toBe(2);
-    expect(p.params).toEqual(['IFCRELAGGREGATES', 'IFCBUILDINGSTOREY', 'IFCRELAGGREGATES', 'IFCBUILDINGSTOREY']);
+    // One EXISTS per unrolled depth (PART_OF_DEPTH = 8).
+    expect((p.sql.match(/EXISTS/g) ?? []).length).toBe(8);
+    // The entity is the *object* of the first hop; the whole is its subject.
+    expect(p.sql).toContain('t0.object = e.entity_id');
+    expect(p.sql).not.toContain('t0.subject = e.entity_id');
+    // Each successive hop walks object → subject and keeps the requested relation.
+    expect(p.sql).toContain('lower(t0.predicate) = lower(?)');
+    expect(p.sql).toContain('JOIN triples t1 ON t1.model_id = t0.model_id AND t1.object = t0.subject');
+    // 1+…+8 = 36 relation binds, one whole-type bind per depth.
+    expect(p.params.filter((x) => x === 'IFCRELAGGREGATES').length).toBe(36);
+    expect(p.params.filter((x) => x === 'IFCBUILDINGSTOREY').length).toBe(8);
+  });
+
+  it('partOf facet without a relation restricts to the six supported relations', () => {
+    const p = facetToSql({ kind: 'partOf', relation: '' });
+    expect(p.sql).toContain('t0.predicate IN (?, ?, ?, ?, ?, ?)');
+    expect(p.params.slice(0, 6)).toEqual([
+      'IfcRelAggregates', 'IfcRelAssignsToGroup', 'IfcRelContainedInSpatialStructure',
+      'IfcRelNests', 'IfcRelVoidsElement', 'IfcRelFillsElement',
+    ]);
+  });
+
+  it('partOf whole predefinedType: USERDEFINED falls back to ObjectType', () => {
+    const facet: IdsFacet = {
+      kind: 'partOf',
+      relation: 'IFCRELCONTAINEDINSPATIALSTRUCTURE',
+      entity: {
+        kind: 'entity',
+        name: { kind: 'simpleValue', value: 'IFCSPACE' },
+        predefinedType: { kind: 'simpleValue', value: 'BURROW' },
+      },
+    };
+    const p = facetToSql(facet);
+    expect(p.sql).toContain(
+      "((lower(w.predefined_type) = lower(?)) OR (upper(w.predefined_type) = 'USERDEFINED' AND (lower(w.object_type) = lower(?))))",
+    );
+    // First depth: relation, whole type, then enum + ObjectType value.
+    expect(p.params.slice(0, 4)).toEqual([
+      'IFCRELCONTAINEDINSPATIALSTRUCTURE', 'IFCSPACE', 'BURROW', 'BURROW',
+    ]);
   });
 });
 

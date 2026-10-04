@@ -338,56 +338,108 @@ function materialSql(facet: MaterialFacet): SqlPredicate {
 }
 
 /**
- * PartOf facet → EXISTS over triples where the entity is the *part* (subject)
- * and the *whole* (object) is reached via the given relation predicate. When an
- * optional `entity` sub-facet is present, the whole must also match that type.
+ * PartOf facet → EXISTS over triples where the entity is the *part* (object)
+ * and the *whole* (subject) is reached by walking whole → part edges upward.
+ * IDS evaluates the facet recursively (UserManual/partof-facet.md), so a whole
+ * directly or indirectly above the entity matches; every hop of a path must use
+ * the requested relation (or, when none is given, one of the six supported
+ * relations) — an unrelated hop in the middle (e.g. containment inside an
+ * aggregate walk) does not count.
  *
- * The extractor stores aggregation/containment as forward edges
- * (whole → parts) for some relations and (part → whole) for others; to be
- * robust we accept the entity on either side of the relation and require the
- * *other* endpoint to satisfy the whole-entity constraint.
+ * The extractor stores every supported relationship as whole --predicate--> part
+ * (subject = whole, object = part): IfcRelAggregates / IfcRelNests /
+ * IfcRelAssignsToGroup (RelatingObject|Group → RelatedObjects),
+ * IfcRelContainedInSpatialStructure (RelatingStructure → RelatedElements),
+ * IfcRelVoidsElement (host → opening), IfcRelFillsElement (opening → filling).
+ * The facet subject is therefore always the *object*; probing the subject side
+ * would let the whole/container satisfy its own PartOf requirement.
+ *
+ * Recursion is unrolled to PART_OF_DEPTH self-joins (one EXISTS per depth, ORed)
+ * rather than a recursive CTE: DuckDB cannot bind a recursive CTE inside a
+ * correlated EXISTS (same constraint as the classification chain in schema.ts).
  */
 function partOfSql(facet: PartOfFacet): SqlPredicate {
-  // Two directions: the entity is the subject (whole = object) or the object
-  // (whole = subject). Each direction is an EXISTS joined to the whole entity
-  // only when a whole-type constraint is present. OR the two together so the
-  // relation matches regardless of which endpoint the extractor put the entity.
-  const one = partOfDirectionSql(facet, 'subject', 'object');
-  const two = partOfDirectionSql(facet, 'object', 'subject');
-  return {
-    sql: `((${one.sql}) OR (${two.sql}))`,
-    params: [...one.params, ...two.params],
-  };
+  const params: unknown[] = [];
+  const hops: string[] = [];
+  for (let depth = 1; depth <= PART_OF_DEPTH; depth++) {
+    const hop = partOfHopSql(facet, depth);
+    hops.push(`(${hop.sql})`);
+    params.push(...hop.params);
+  }
+  return { sql: `(${hops.join(' OR ')})`, params };
 }
 
-/** One EXISTS for a single edge direction: `e` is on `self`, whole is on `whole`. */
-function partOfDirectionSql(
-  facet: PartOfFacet,
-  self: 'subject' | 'object',
-  whole: 'subject' | 'object',
-): SqlPredicate {
-  const params: unknown[] = [];
-  const clauses: string[] = [`t.model_id = e.model_id`, `t.${self} = e.entity_id`];
+/** The six relationships IDS PartOf traverses when no `relation` is authored. */
+const PART_OF_RELATIONS = [
+  'IfcRelAggregates',
+  'IfcRelAssignsToGroup',
+  'IfcRelContainedInSpatialStructure',
+  'IfcRelNests',
+  'IfcRelVoidsElement',
+  'IfcRelFillsElement',
+] as const;
 
-  if (facet.relation) {
-    // IDS parser uppercases `relation` (e.g. 'IFCRELAGGREGATES'), but the
-    // extractor stores triple predicates mixed-case ('IfcRelAggregates').
-    // Compare case-insensitively so an explicit relation actually matches.
-    clauses.push(`lower(t.predicate) = lower(?)`);
-    params.push(facet.relation);
+/** Whole → part hops walked upward; mirrors CLASSIFICATION_DEPTH in schema.ts. */
+const PART_OF_DEPTH = 8;
+
+/** One EXISTS walking `depth` whole→part edges above `e` (the part). */
+function partOfHopSql(facet: PartOfFacet, depth: number): SqlPredicate {
+  const params: unknown[] = [];
+  const where: string[] = ['t0.model_id = e.model_id', 't0.object = e.entity_id'];
+  const joins: string[] = [];
+  for (let i = 0; i < depth; i++) {
+    const t = `t${i}`;
+    if (i > 0) {
+      const prev = `t${i - 1}`;
+      joins.push(`JOIN triples ${t} ON ${t}.model_id = ${prev}.model_id AND ${t}.object = ${prev}.subject`);
+    }
+    if (facet.relation) {
+      // IDS parser uppercases `relation` (e.g. 'IFCRELAGGREGATES'), but the
+      // extractor stores triple predicates mixed-case ('IfcRelAggregates').
+      // Compare case-insensitively so an explicit relation actually matches.
+      where.push(`lower(${t}.predicate) = lower(?)`);
+      params.push(facet.relation);
+    } else {
+      // No relation: only the six supported relationships, never the generic
+      // `references` / IfcRelDefines* fallbacks the extractor also emits.
+      where.push(`${t}.predicate IN (${PART_OF_RELATIONS.map(() => '?').join(', ')})`);
+      params.push(...PART_OF_RELATIONS);
+    }
   }
 
   let join = '';
   if (facet.entity) {
+    const last = `t${depth - 1}`;
+    join = ` JOIN entities w ON w.model_id = ${last}.model_id AND w.entity_id = ${last}.subject`;
     const ep = restrictionToSql('w.ifc_type', facet.entity.name);
-    join = `JOIN entities w ON w.model_id = t.model_id AND w.entity_id = t.${whole}`;
-    clauses.push(`(${ep.sql})`);
+    where.push(`(${ep.sql})`);
     params.push(...ep.params);
+    if (facet.entity.predefinedType) {
+      const pt = partOfPredefinedTypeSql('w', facet.entity.predefinedType);
+      where.push(`(${pt.sql})`);
+      params.push(...pt.params);
+    }
   }
 
   return {
-    sql: `EXISTS (SELECT 1 FROM triples t ${join} WHERE ${clauses.join(' AND ')})`,
+    sql: `EXISTS (SELECT 1 FROM triples t0 ${joins.join(' ')}${join} WHERE ${where.join(' AND ')})`,
     params,
+  };
+}
+
+/**
+ * The whole's predefined type, resolved the IDS way: the IFC enum is matched
+ * directly, and when that enum is USERDEFINED the authored value lives in the
+ * entity's ObjectType instead (UserManual/entity-facet.md). Without the
+ * fallback the nested `predefinedType` would reject the USERDEFINED pass cases;
+ * ignoring the field entirely would let the failing cases through.
+ */
+function partOfPredefinedTypeSql(alias: string, restr: IdsValueRestriction): SqlPredicate {
+  const direct = restrictionToSql(`${alias}.predefined_type`, restr);
+  const custom = restrictionToSql(`${alias}.object_type`, restr);
+  return {
+    sql: `((${direct.sql}) OR (upper(${alias}.predefined_type) = 'USERDEFINED' AND (${custom.sql})))`,
+    params: [...direct.params, ...custom.params],
   };
 }
 
