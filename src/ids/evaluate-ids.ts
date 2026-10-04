@@ -233,6 +233,7 @@ function rLabel(r: import('./types.js').IdsValueRestriction | undefined): string
     case 'enumeration': return r.values.join('|');
     case 'pattern':     return `/${r.pattern}/`;
     case 'bounds':      return `[${r.min ?? ''}..${r.max ?? ''}]`;
+    case 'length':      return r.length != null ? `length ${r.length}` : `length ${r.minLength ?? ''}..${r.maxLength ?? ''}`;
   }
 }
 

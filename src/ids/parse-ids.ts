@@ -239,6 +239,14 @@ function parseXsRestriction(restr: Element): IdsValueRestriction | undefined {
   const pat = child(restr, 'pattern')?.getAttribute('value');
   if (pat) return { kind: 'pattern', pattern: pat };
 
+  // String length: <xs:length/>, <xs:minLength/>, <xs:maxLength/>
+  const len = numAttr(child(restr, 'length'));
+  const minLen = numAttr(child(restr, 'minlength'));
+  const maxLen = numAttr(child(restr, 'maxlength'));
+  if (len != null || minLen != null || maxLen != null) {
+    return { kind: 'length', length: len, minLength: minLen, maxLength: maxLen };
+  }
+
   // Numeric bounds via min/maxInclusive / min/maxExclusive.
   const minInc = numAttr(child(restr, 'mininclusive'));
   const minExc = numAttr(child(restr, 'minexclusive'));

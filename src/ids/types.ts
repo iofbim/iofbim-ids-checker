@@ -24,15 +24,23 @@
 
 /**
  * How a facet constrains a value. `undefined` means "any value" (presence only).
- *  - simpleValue — exact match (case-insensitive)
- *  - enumeration — value must be one of the listed strings
- *  - pattern     — value must match this regex (XSD/JS flavour)
+ *  - simpleValue — exact, case-sensitive match; numbers also match within the IDS
+ *                  tolerance (1e-6 relative + 1e-6 absolute)
+ *  - enumeration — value must be one of the listed values (each compared as simpleValue)
+ *  - pattern     — value must match this regex (XSD/JS flavour), case-sensitively
  *  - bounds      — numeric range, any subset of min/max with inclusivity
+ *  - length      — string length: exact, and/or min / max
  */
 export type IdsValueRestriction =
   | { kind: 'simpleValue'; value: string }
   | { kind: 'enumeration'; values: string[] }
   | { kind: 'pattern'; pattern: string }
+  | {
+      kind: 'length';
+      length?: number | undefined;
+      minLength?: number | undefined;
+      maxLength?: number | undefined;
+    }
   | {
       kind: 'bounds';
       min?: number | undefined;

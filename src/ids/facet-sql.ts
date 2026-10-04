@@ -46,6 +46,34 @@ const ALWAYS_FALSE: SqlPredicate = { sql: '1=0', params: [] };
 // Value restriction → SQL comparison on a given column
 // ---------------------------------------------------------------------------
 
+/** IDS floating-point equality tolerance (ImplementersDocumentation/tolerance.md) */
+const TOLERANCE = 1e-6;
+
+/** A number as IDS writes one: 42, 42., 42.0, -0.5, 1e-3. Null for anything else */
+function numericLiteral(v: string): number | null {
+  const t = v.trim();
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(t)) return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * One IDS value compared with `col`. Strings match exactly and case-sensitively; a numeric
+ * value also matches a stored number within the tolerance, v ± (|v|·ε + ε), so "42" matches
+ * 42. and 42.0 (type casting) and 99999.899999 equals 100000; booleans are written true /
+ * false in IDS and stored upper case by IFC, so they compare case-insensitively.
+ */
+function valueEqualsSql(col: string, v: string): SqlPredicate {
+  if (v === 'true' || v === 'false') return { sql: `lower(${col}) = ?`, params: [v] };
+  const n = numericLiteral(v);
+  if (n === null) return { sql: `${col} = ?`, params: [v] };
+  const d = Math.abs(n) * TOLERANCE + TOLERANCE;
+  return {
+    sql: `(${col} = ? OR TRY_CAST(${col} AS DOUBLE) BETWEEN ? AND ?)`,
+    params: [v, n - d, n + d],
+  };
+}
+
 /**
  * Build a boolean predicate comparing `col` against a restriction.
  *
@@ -62,19 +90,29 @@ export function restrictionToSql(
 
   switch (restr.kind) {
     case 'simpleValue':
-      return { sql: `lower(${col}) = lower(?)`, params: [restr.value] };
+      return valueEqualsSql(col, restr.value);
 
     case 'enumeration': {
       if (restr.values.length === 0) return ALWAYS_FALSE;
-      const inList = restr.values.map(() => 'lower(?)').join(', ');
-      return { sql: `lower(${col}) IN (${inList})`, params: [...restr.values] };
+      const each = restr.values.map((v) => valueEqualsSql(col, v));
+      return { sql: `(${each.map((p) => p.sql).join(' OR ')})`, params: each.flatMap((p) => p.params) };
     }
 
     case 'pattern':
       // XSD patterns are implicitly anchored: the whole value must match, not a substring
       // ("ST-KRS-[^-]+" must reject "ST-KRS-BETON-C30"), so full match, not regexp_matches.
+      // Case-sensitive, like every IDS string comparison.
       // RE2 has no XSD class subtraction ("[\p{L}-[_]]"): such classes are spelled out
-      return { sql: `regexp_full_match(${col}, ?, 'i')`, params: [xsdToRe2(restr.pattern)] };
+      return { sql: `regexp_full_match(${col}, ?)`, params: [xsdToRe2(restr.pattern)] };
+
+    case 'length': {
+      const parts: string[] = [];
+      const params: unknown[] = [];
+      if (restr.length != null) { parts.push(`length(${col}) = ?`); params.push(restr.length); }
+      if (restr.minLength != null) { parts.push(`length(${col}) >= ?`); params.push(restr.minLength); }
+      if (restr.maxLength != null) { parts.push(`length(${col}) <= ?`); params.push(restr.maxLength); }
+      return { sql: `(${col} IS NOT NULL AND ${parts.join(' AND ')})`, params };
+    }
 
     case 'bounds': {
       const target = numCol ?? `TRY_CAST(${col} AS DOUBLE)`;

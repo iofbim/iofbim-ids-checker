@@ -7,15 +7,33 @@ describe('restrictionToSql', () => {
     expect(restrictionToSql('e.name', undefined)).toEqual({ sql: 'e.name IS NOT NULL', params: [] });
   });
 
-  it('simpleValue → case-insensitive equality with bound param', () => {
+  it('simpleValue → case-sensitive equality with bound param', () => {
     const p = restrictionToSql('e.name', { kind: 'simpleValue', value: 'Wall A' });
-    expect(p.sql).toBe('lower(e.name) = lower(?)');
+    expect(p.sql).toBe('e.name = ?');
     expect(p.params).toEqual(['Wall A']);
   });
 
-  it('enumeration → IN list with one bound param each', () => {
+  it('numeric simpleValue → text match or the number within the IDS tolerance', () => {
+    const p = restrictionToSql('pp.value', { kind: 'simpleValue', value: '100000.' });
+    expect(p.sql).toBe('(pp.value = ? OR TRY_CAST(pp.value AS DOUBLE) BETWEEN ? AND ?)');
+    expect(p.params[0]).toBe('100000.');
+    expect(p.params[1]).toBeCloseTo(99999.899999, 9);
+    expect(p.params[2]).toBeCloseTo(100000.100001, 9);
+  });
+
+  it('boolean simpleValue → lower-case compare (IFC stores TRUE / FALSE)', () => {
+    expect(restrictionToSql('e.name', { kind: 'simpleValue', value: 'true' })).toEqual({ sql: 'lower(e.name) = ?', params: ['true'] });
+  });
+
+  it('length → string length bounds', () => {
+    const p = restrictionToSql('e.name', { kind: 'length', minLength: 2, maxLength: 3 });
+    expect(p.sql).toBe('(e.name IS NOT NULL AND length(e.name) >= ? AND length(e.name) <= ?)');
+    expect(p.params).toEqual([2, 3]);
+  });
+
+  it('enumeration → one equality per value, ORed', () => {
     const p = restrictionToSql('e.ifc_type', { kind: 'enumeration', values: ['IFCDOOR', 'IFCWINDOW'] });
-    expect(p.sql).toBe('lower(e.ifc_type) IN (lower(?), lower(?))');
+    expect(p.sql).toBe('(e.ifc_type = ? OR e.ifc_type = ?)');
     expect(p.params).toEqual(['IFCDOOR', 'IFCWINDOW']);
   });
 
@@ -23,9 +41,9 @@ describe('restrictionToSql', () => {
     expect(restrictionToSql('e.ifc_type', { kind: 'enumeration', values: [] })).toEqual({ sql: '1=0', params: [] });
   });
 
-  it('pattern → regexp_full_match (anchored like XSD), case-insensitive', () => {
+  it('pattern → regexp_full_match (anchored like XSD), case-sensitive', () => {
     const p = restrictionToSql('e.name', { kind: 'pattern', pattern: '^FD\\d+$' });
-    expect(p.sql).toBe("regexp_full_match(e.name, ?, 'i')");
+    expect(p.sql).toBe('regexp_full_match(e.name, ?)');
     expect(p.params).toEqual(['^FD\\d+$']);
   });
 
@@ -46,8 +64,8 @@ describe('facetToSql', () => {
       predefinedType: { kind: 'simpleValue', value: 'SOLIDWALL' },
     };
     const p = facetToSql(facet);
-    expect(p.sql).toContain('lower(e.ifc_type) = lower(?)');
-    expect(p.sql).toContain('lower(e.predefined_type) = lower(?)');
+    expect(p.sql).toContain('e.ifc_type = ?');
+    expect(p.sql).toContain('e.predefined_type = ?');
     expect(p.params).toEqual(['IFCWALL', 'SOLIDWALL']);
   });
 
@@ -67,7 +85,7 @@ describe('facetToSql', () => {
       value: { kind: 'simpleValue', value: 'ARCHITECT' },
     };
     const p = facetToSql(facet);
-    expect(p.sql).toContain('lower(ea.value) = lower(?)');
+    expect(p.sql).toContain('ea.value = ?');
     expect(p.params).toEqual(['Roles', 'ARCHITECT']);
   });
 
