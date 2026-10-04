@@ -42,8 +42,11 @@
  *   1.07 — pset_properties carries the value's IFC data type (`propType`), and
  *          single-value measures resolve their unit from that measure (SI
  *          conversion), so IDS dataType and unit comparisons work.
+ *   1.08 — predefined property sets (IfcDoorPanelProperties, …) ingest one
+ *          pset_properties row per schema attribute, so the IDS property facet
+ *          can address them like any other property.
  */
-export const PARSER_VERSION = '1.07';
+export const PARSER_VERSION = '1.08';
 
 /**
  * One authored value of a multi-valued IfcProperty* subtype

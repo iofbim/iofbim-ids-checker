@@ -177,7 +177,7 @@ describe('facetToSql', () => {
     expect(p.params).toEqual([]);
   });
 
-  it('property facet → matches occurrence psets AND inherited type psets', () => {
+  it('property facet → every matching property set and property must satisfy', () => {
     const facet: IdsFacet = {
       kind: 'property',
       propertySet: { kind: 'simpleValue', value: 'Pset_WallCommon' },
@@ -185,17 +185,38 @@ describe('facetToSql', () => {
       value: { kind: 'simpleValue', value: 'TRUE' },
     };
     const p = facetToSql(facet);
-    // Direct occurrence pset EXISTS.
-    expect(p.sql).toContain('FROM pset_properties pp');
-    expect(p.sql).toContain('pp.entity_id = e.entity_id');
-    // Type-inherited pset EXISTS via IfcRelDefinesByType (type = subject).
-    expect(p.sql).toContain("dt.predicate = 'IfcRelDefinesByType'");
-    expect(p.sql).toContain('dt.object = e.entity_id');
-    expect(p.sql).toContain('tp.entity_id = dt.subject');
-    // Params: the filter is emitted twice (direct then type), in that order.
+    // Occurrence psets and type-inherited psets alike come from the
+    // `effective_properties` view (which also applies occurrence-over-type).
+    expect(p.sql).toContain('FROM effective_properties v');
+    expect(p.sql).not.toContain('FROM pset_properties pp');
+    // One matching pset must exist, no matching pset may lack a matching
+    // property, and no matching property may fail the value.
+    expect(p.sql).toContain('NOT (EXISTS');
+    expect(p.sql).toContain('v.pset_name = ?');
+    expect(p.sql).toContain('v.property_name = ?');
+    expect(p.sql).toContain('w.property_name = ?');
+    // A multi-valued property (one row per value) passes when ANY of its rows does
+    expect(p.sql).toContain('w.property_name = v.property_name');
+    expect(p.sql).toContain('w.value = ?');
     expect(p.params).toEqual([
+      'Pset_WallCommon', 'Pset_WallCommon', 'IsExternal',
       'Pset_WallCommon', 'IsExternal', 'TRUE',
-      'Pset_WallCommon', 'IsExternal', 'TRUE',
+    ]);
+  });
+
+  it('property facet without a value requires a non-empty value', () => {
+    const facet: IdsFacet = {
+      kind: 'property',
+      propertySet: { kind: 'simpleValue', value: 'Pset_WallCommon' },
+      baseName: { kind: 'simpleValue', value: 'IsExternal' },
+    };
+    const p = facetToSql(facet);
+    // An authored '' or a LOGICAL unknown is stored NULL, so a name-only
+    // requirement needs `IS NOT NULL AND <> ''`.
+    expect(p.sql).toContain("(w.value IS NOT NULL AND w.value <> '')");
+    expect(p.params).toEqual([
+      'Pset_WallCommon', 'Pset_WallCommon', 'IsExternal',
+      'Pset_WallCommon', 'IsExternal',
     ]);
   });
 
@@ -208,14 +229,12 @@ describe('facetToSql', () => {
       value: { kind: 'simpleValue', value: 'X' },
     };
     const p = facetToSql(facet);
-    expect(p.sql).toContain('upper(pp.data_type) = upper(?)');
+    expect(p.sql).toContain('(w.data_type IS NULL OR upper(w.data_type) = upper(?))');
     // A non-measure value still compares against the authored text.
-    expect(p.sql).toContain('pp.value = ?');
-    // The filter is emitted once per branch (direct then type-inherited).
-    expect(p.params).toEqual([
-      'Foo_Bar', 'Foo', 'IFCLABEL', 'X',
-      'Foo_Bar', 'Foo', 'IFCLABEL', 'X',
-    ]);
+    expect(p.sql).toContain('w.value = ?');
+    // pset (some set), pset + name (no set without the property), then pset +
+    // name + the per-property check (data type, value) for the bad-property test.
+    expect(p.params).toEqual(['Foo_Bar', 'Foo_Bar', 'Foo', 'Foo_Bar', 'Foo', 'IFCLABEL', 'X']);
   });
 
   it('property facet → a measure value compares the SI-normalized column', () => {
@@ -229,12 +248,10 @@ describe('facetToSql', () => {
     const p = facetToSql(facet);
     // mm-authored model values were converted to metres at ingest, so the IDS
     // value (in metres) is compared against value_si, not the authored text.
-    expect(p.sql).toContain('pp.value_si BETWEEN ? AND ?');
-    expect(p.params[0]).toBe('Foo_Bar');
-    expect(p.params[1]).toBe('Foo');
-    expect(p.params[2]).toBe('IFCLENGTHMEASURE');
-    expect(p.params[3]).toBeCloseTo(1.999997, 9);
-    expect(p.params[4]).toBeCloseTo(2.000003, 9);
+    expect(p.sql).toContain('w.value_si BETWEEN ? AND ?');
+    expect(p.params.slice(0, 6)).toEqual(['Foo_Bar', 'Foo_Bar', 'Foo', 'Foo_Bar', 'Foo', 'IFCLENGTHMEASURE']);
+    expect(p.params[6]).toBeCloseTo(1.999997, 9);
+    expect(p.params[7]).toBeCloseTo(2.000003, 9);
   });
 
   it('classification facet → EXISTS over classifications view', () => {
@@ -338,7 +355,7 @@ describe('facetToValueSql', () => {
     expect(facetToValueSql(facet)).toBeNull();
   });
 
-  it('property facet → COALESCE of occurrence then type-inherited value', () => {
+  it('property facet → scalar value from the effective properties', () => {
     const facet: IdsFacet = {
       kind: 'property',
       propertySet: { kind: 'simpleValue', value: 'Pset_WallCommon' },
@@ -346,11 +363,9 @@ describe('facetToValueSql', () => {
     };
     const v = facetToValueSql(facet);
     expect(v).not.toBeNull();
-    expect(v!.sql).toContain('COALESCE(');
-    expect(v!.sql).toContain('SELECT pp.value FROM pset_properties pp');
-    expect(v!.sql).toContain("dt.predicate = 'IfcRelDefinesByType'");
-    // pset + property name bound once per branch (occurrence then type).
-    expect(v!.params).toEqual(['Pset_WallCommon', 'IsExternal', 'Pset_WallCommon', 'IsExternal']);
+    expect(v!.sql).toContain('SELECT v.value FROM effective_properties v');
+    // pset + property name bound once.
+    expect(v!.params).toEqual(['Pset_WallCommon', 'IsExternal']);
   });
 
   it('set-membership facets have no scalar value → null', () => {

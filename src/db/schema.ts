@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS pset_properties (
   entity_id     INTEGER NOT NULL,
   pset_name     VARCHAR NOT NULL,
   property_name VARCHAR NOT NULL,
-  value         VARCHAR,           -- authored value as text (always present)
+  value         VARCHAR,           -- authored value as text; NULL for $, '' and LOGICAL unknown
   value_num     DOUBLE,            -- authored value as a number, when numeric
   value_si      DOUBLE,            -- value normalized to SI base units (PB-B)
   unit          VARCHAR,           -- resolved authored unit label, e.g. MILLIMETRE
@@ -93,6 +93,30 @@ CREATE TABLE IF NOT EXISTS pset_properties (
 );
 CREATE INDEX IF NOT EXISTS idx_pset ON pset_properties (model_id, entity_id);
 CREATE INDEX IF NOT EXISTS idx_pset_name ON pset_properties (model_id, pset_name, property_name);
+
+-- The property sets an entity actually has for IDS: its own occurrence property
+-- sets (IfcRelDefinesByProperties → row with entity_id = the element) plus the
+-- property sets it inherits from its type (IfcRelDefinesByType is stored
+-- subject = type, object = occurrence). An occurrence property set overrides the
+-- type's set of the same name (test case
+-- properties_can_be_overriden_by_an_occurrence), so an inherited row is dropped
+-- when the occurrence already defines that property-set name.
+CREATE VIEW IF NOT EXISTS effective_properties AS
+SELECT pp.model_id, pp.entity_id, pp.pset_name, pp.property_name,
+       pp.value, pp.value_num, pp.value_si, pp.unit, pp.data_type
+FROM pset_properties pp
+UNION ALL
+SELECT tp.model_id, dt.object AS entity_id, tp.pset_name, tp.property_name,
+       tp.value, tp.value_num, tp.value_si, tp.unit, tp.data_type
+FROM triples dt
+JOIN pset_properties tp
+  ON tp.model_id = dt.model_id AND tp.entity_id = dt.subject
+WHERE dt.predicate = 'IfcRelDefinesByType'
+  AND NOT EXISTS (
+    SELECT 1 FROM pset_properties dp
+    WHERE dp.model_id = dt.model_id AND dp.entity_id = dt.object
+      AND dp.pset_name = tp.pset_name
+  );
 
 -- Every direct STEP attribute of a non-IfcRel entity, in schema order, as text.
 -- The entities table only materializes the curated Tier-1 columns (name, tag,

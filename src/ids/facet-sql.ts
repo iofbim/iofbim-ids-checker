@@ -405,77 +405,100 @@ function attributeExistsSql(attrName: string, value: IdsValueRestriction | undef
 }
 
 /**
- * Property facet → the entity satisfies the property either **directly** (an
- * occurrence pset via IfcRelDefinesByProperties) OR through its **type** (a type
- * pset the occurrence inherits via IfcRelDefinesByType). Type psets are ingested
- * against the *type* entity's id, not propagated to occurrences, so an IDS spec
- * that applies to occurrences (e.g. IFCAIRTERMINAL) but requires a type pset
- * (e.g. Pset_AirTerminalTypeCommon) would otherwise fail every occurrence and
- * only pass the type. Matching against the type's psets as well fixes that.
+ * Property facet → the entity's effective property sets (occurrence sets plus the
+ * sets inherited from its type, with occurrence sets overriding same-named type
+ * sets — see the `effective_properties` view) must **all** satisfy the
+ * requirement.
  *
- * propertySet and baseName are matched (case-insensitive); the optional value
- * restriction applies against `value` (text) and `value_si` (numeric values and
- * bounds), so a multi-valued property's every stored value is tested.
+ * IDS treats propertySet and baseName as restrictions, so one facet can match
+ * several sets and several properties. Per property-facet.md and the
+ * "..._all_matching_..." test cases, every matching set must contain a matching
+ * property, and every matching property must satisfy the requirement. A property
+ * with no value (an authored empty string or a LOGICAL unknown is stored NULL)
+ * does not satisfy a name-only requirement.
+ *
+ * A multi-valued property (list, bounded, table, enumerated) is stored as one row
+ * per value, and satisfies the requirement when ANY of its values does: the
+ * value check is per property (pset + name), not per row. An IDS dataType must
+ * equal the stored IFC value type, and a measure value compares in SI.
  */
 function propertySql(facet: PropertyFacet): SqlPredicate {
-  // Build the shared pset/property/value filter once, parameterised on the
-  // pset alias so it can be reused for the direct and type-inherited EXISTS.
-  const filter = (alias: string): SqlPredicate => {
-    const parts: string[] = [];
-    const params: unknown[] = [];
+  const ps = restrictionToSql('v.pset_name', facet.propertySet);
+  const bn = restrictionToSql('v.property_name', facet.baseName);
+  const bnInPset = restrictionToSql('w.property_name', facet.baseName);
+  const ok = propertyValueOkSql('w', facet);
 
-    const ps = restrictionToSql(`${alias}.pset_name`, facet.propertySet);
-    parts.push(`(${ps.sql})`);
-    params.push(...ps.params);
+  const base = 'v.model_id = e.model_id AND v.entity_id = e.entity_id';
+  const matchingPset = `(${base}) AND (${ps.sql})`;
 
-    const bn = restrictionToSql(`${alias}.property_name`, facet.baseName);
-    parts.push(`(${bn.sql})`);
-    params.push(...bn.params);
-
-    // An IDS dataType must equal the stored IFC value type; complex and reference
-    // properties were never ingested, so this also rejects them.
-    if (facet.dataType) {
-      parts.push(`upper(${alias}.data_type) = upper(?)`);
-      params.push(facet.dataType);
-    }
-
-    if (facet.value) {
-      // A measure's IDS value is in SI, so compare it against the SI-normalized
-      // column rather than the authored text (mm vs m).
-      const v = isMeasureDataType(facet.dataType)
-        ? measureRestrictionToSql(`${alias}.value_si`, facet.value)
-        : restrictionToSql(`${alias}.value`, facet.value, `${alias}.value_si`);
-      parts.push(`(${v.sql})`);
-      params.push(...v.params);
-    }
-    return { sql: parts.join(' AND '), params };
-  };
-
-  // Direct: pset attached to the occurrence itself.
-  const direct = filter('pp');
-  const directExists = `EXISTS (
-    SELECT 1 FROM pset_properties pp
-    WHERE pp.model_id = e.model_id AND pp.entity_id = e.entity_id AND ${direct.sql}
+  // At least one property set matches the facet's pset restriction.
+  const somePset = `EXISTS (
+    SELECT 1 FROM effective_properties v
+    WHERE ${matchingPset}
   )`;
 
-  // Inherited: pset attached to the entity's type. The extractor stores
-  // IfcRelDefinesByType as (subject = type, object = occurrence), so the type is
-  // the subject of a triple whose object is this entity.
-  const typed = filter('tp');
-  const typeExists = `EXISTS (
-    SELECT 1 FROM triples dt
-    JOIN pset_properties tp
-      ON tp.model_id = dt.model_id AND tp.entity_id = dt.subject
-    WHERE dt.model_id = e.model_id
-      AND dt.predicate = 'IfcRelDefinesByType'
-      AND dt.object = e.entity_id
-      AND ${typed.sql}
+  // No matching property set lacks a property matching the baseName.
+  const missingProperty = `EXISTS (
+    SELECT 1 FROM effective_properties v
+    WHERE ${matchingPset}
+      AND NOT EXISTS (
+        SELECT 1 FROM effective_properties w
+        WHERE w.model_id = v.model_id AND w.entity_id = v.entity_id
+          AND w.pset_name = v.pset_name AND (${bnInPset.sql})
+      )
+  )`;
+
+  // No matching property has none of its values satisfying the requirement
+  // (one row per value of a multi-valued property: any one may satisfy it).
+  const badProperty = `EXISTS (
+    SELECT 1 FROM effective_properties v
+    WHERE ${matchingPset} AND (${bn.sql})
+      AND NOT EXISTS (
+        SELECT 1 FROM effective_properties w
+        WHERE w.model_id = v.model_id AND w.entity_id = v.entity_id
+          AND w.pset_name = v.pset_name AND w.property_name = v.property_name
+          AND ${ok.sql}
+      )
   )`;
 
   return {
-    sql: `((${directExists}) OR (${typeExists}))`,
-    params: [...direct.params, ...typed.params],
+    sql: `((${somePset}) AND NOT (${missingProperty}) AND NOT (${badProperty}))`,
+    params: [...ps.params, ...ps.params, ...bnInPset.params, ...ps.params, ...bn.params, ...ok.params],
   };
+}
+
+/**
+ * Value predicate for a matching property: the facet's value restriction, or —
+ * when the facet only requires the property to exist — that it actually carries
+ * a value. An empty string and a LOGICAL unknown both arrive as NULL, so both
+ * count as no value (test cases `an_empty_string...` and `a_logical_unknown...`).
+ */
+function propertyValueOkSql(alias: string, facet: PropertyFacet): SqlPredicate {
+  const parts: string[] = [];
+  const params: unknown[] = [];
+  // An IDS dataType must equal the stored IFC value type; complex and reference
+  // properties are never ingested, so this also rejects them. A row without a
+  // known type (the attributes of a predefined property set: the checker has no
+  // schema types for them) cannot be checked, so it is not rejected for it.
+  if (facet.dataType) {
+    parts.push(`(${alias}.data_type IS NULL OR upper(${alias}.data_type) = upper(?))`);
+    params.push(facet.dataType);
+  }
+  if (facet.value) {
+    // A measure's IDS value is in SI, so compare it against the SI-normalized
+    // column rather than the authored text (mm vs m).
+    const v = isMeasureDataType(facet.dataType)
+      ? measureRestrictionToSql(`${alias}.value_si`, facet.value)
+      : restrictionToSql(`${alias}.value`, facet.value, `${alias}.value_si`);
+    parts.push(`(${v.sql})`);
+    params.push(...v.params);
+  } else {
+    parts.push(`(${alias}.value IS NOT NULL AND ${alias}.value <> '')`);
+  }
+  // A comparison against a non-numeric or NULL value yields NULL, which an
+  // EXISTS would silently swallow; a property without a matching value must
+  // count as *not* satisfying the requirement, so force a two-valued result.
+  return { sql: `COALESCE((${parts.join(' AND ')}), false)`, params };
 }
 
 function classificationSql(facet: ClassificationFacet): SqlPredicate {
@@ -669,41 +692,21 @@ export function facetToValueSql(facet: IdsFacet): SqlPredicate | null {
 
 /**
  * Correlated scalar subquery returning the matched property's value string.
- * Mirrors {@link propertySql}'s pset/name matching but selects the value rather
- * than testing existence; the occurrence pset wins over the inherited type pset
- * (COALESCE order). LIMIT 1 guards against duplicate authored properties.
+ * Mirrors {@link propertySql}'s pset/name matching but selects a value rather
+ * than testing existence. Reads the same `effective_properties` source, so an
+ * occurrence set already overrides the type's; LIMIT 1 guards against duplicate
+ * authored properties.
  */
 function propertyValueSql(facet: PropertyFacet): SqlPredicate {
-  const params: unknown[] = [];
-
-  const psetName = (alias: string): { sql: string; params: unknown[] } =>
-    restrictionToSql(`${alias}.pset_name`, facet.propertySet);
-  const propName = (alias: string): { sql: string; params: unknown[] } =>
-    restrictionToSql(`${alias}.property_name`, facet.baseName);
-
-  const dPs = psetName('pp');
-  const dBn = propName('pp');
-  const direct = `(
-    SELECT pp.value FROM pset_properties pp
-    WHERE pp.model_id = e.model_id AND pp.entity_id = e.entity_id
-      AND (${dPs.sql}) AND (${dBn.sql})
-    LIMIT 1
-  )`;
-  params.push(...dPs.params, ...dBn.params);
-
-  const tPs = psetName('tp');
-  const tBn = propName('tp');
-  const typed = `(
-    SELECT tp.value FROM triples dt
-    JOIN pset_properties tp
-      ON tp.model_id = dt.model_id AND tp.entity_id = dt.subject
-    WHERE dt.model_id = e.model_id
-      AND dt.predicate = 'IfcRelDefinesByType'
-      AND dt.object = e.entity_id
-      AND (${tPs.sql}) AND (${tBn.sql})
-    LIMIT 1
-  )`;
-  params.push(...tPs.params, ...tBn.params);
-
-  return { sql: `COALESCE(${direct}, ${typed})`, params };
+  const ps = restrictionToSql('v.pset_name', facet.propertySet);
+  const bn = restrictionToSql('v.property_name', facet.baseName);
+  return {
+    sql: `(
+      SELECT v.value FROM effective_properties v
+      WHERE v.model_id = e.model_id AND v.entity_id = e.entity_id
+        AND (${ps.sql}) AND (${bn.sql})
+      LIMIT 1
+    )`,
+    params: [...ps.params, ...bn.params],
+  };
 }

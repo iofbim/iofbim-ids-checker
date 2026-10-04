@@ -9,7 +9,7 @@
 
 import { tableFromArrays, tableToIPC } from 'apache-arrow';
 import * as duckdb from '@duckdb/duckdb-wasm';
-import type { ParsedModel } from '../parser/types.js';
+import type { ParsedModel, IfcEntity } from '../parser/types.js';
 import { getDb, setIngestPromise } from './client.js';
 import { MATERIALIZED_TABLES } from './schema.js';
 import { canonicalizeGlobalId } from '../parser/guid.js';
@@ -199,6 +199,8 @@ async function insertTriples(
 // A complex property (IfcComplexProperty / IfcPhysicalComplexQuantity) and a
 // reference value (IfcPropertyReferenceValue) are not supported by IDS, so they
 // are skipped entirely rather than emitted as property rows.
+// Predefined property sets (IfcDoorPanelProperties, …) have no property children;
+// their schema attributes are the properties.
 // See ADR-016.
 // ---------------------------------------------------------------------------
 
@@ -208,6 +210,48 @@ const UNSUPPORTED_PROPERTY_TYPES = new Set([
   'IFCPHYSICALCOMPLEXQUANTITY',
   'IFCPROPERTYREFERENCEVALUE',
 ]);
+
+/**
+ * IfcPreDefinedPropertySet subtypes. Unlike IfcPropertySet these carry no
+ * IfcProperty children: each schema attribute *is* an IDS property, addressed by
+ * its attribute name (property-facet.md "predefined properties are supported but
+ * discouraged"). IDS test case pass/fail-predefined_properties_…_1_2/2_2.
+ */
+const PREDEFINED_PROPERTY_SETS = new Set([
+  'IFCDOORLININGPROPERTIES',
+  'IFCDOORPANELPROPERTIES',
+  'IFCPERMEABLECOVERINGPROPERTIES',
+  'IFCREINFORCEMENTDEFINITIONPROPERTIES',
+  'IFCWINDOWLININGPROPERTIES',
+  'IFCWINDOWPANELPROPERTIES',
+]);
+
+/** IfcRoot / IfcPreDefinedPropertySet bookkeeping attributes that are not properties. */
+const PREDEFINED_PSET_SKIP = new Set(['globalid', 'ownerhistory', 'name', 'description']);
+
+/** One property (attribute name + authored value) of a predefined property set. */
+export interface PredefinedPropertyRow {
+  name: string;
+  value: string;
+}
+
+/**
+ * The IDS-addressable properties of a predefined property set: its schema
+ * attributes by name (PanelOperation, …), skipping IfcRoot bookkeeping fields,
+ * references and attributes without a value.
+ */
+export function predefinedPropertyRows(pset: IfcEntity): PredefinedPropertyRow[] {
+  const rows: PredefinedPropertyRow[] = [];
+  for (const attr of pset.rawAttributes ?? []) {
+    if (PREDEFINED_PSET_SKIP.has(attr.name.toLowerCase())) continue;
+    const members = attr.values ?? (attr.value !== null ? [attr.value] : []);
+    for (const rawVal of members) {
+      if (rawVal === '' || rawVal.startsWith('#')) continue;
+      rows.push({ name: attr.name, value: rawVal });
+    }
+  }
+  return rows;
+}
 
 async function insertPsets(
   db: duckdb.AsyncDuckDB,
@@ -250,6 +294,7 @@ async function insertPsets(
         valuesNum.push(toNum(v.value));
         valuesSi.push(v.si ?? toNum(v.value));
         units.push(v.unit ?? null);
+        dataTypes.push(v.measure ?? propEntity.propType ?? null);
       }
       return;
     }
@@ -270,6 +315,32 @@ async function insertPsets(
     dataTypes.push(propEntity.propType ?? propEntity.qtyType ?? null);
   }
 
+  /**
+   * Emit one row per attribute of a predefined property set. Its attributes are
+   * IDS-addressable by their schema name (PanelOperation, …); IfcRoot fields and
+   * references carry no property value and are skipped. An attribute without a
+   * value (empty or LOGICAL unknown) emits no row, like a value-less IfcProperty.
+   */
+  function emitPredefinedProperties(
+    entityId: number,
+    psetName: string,
+    pset: IfcEntity,
+  ): void {
+    for (const { name, value: rawVal } of predefinedPropertyRows(pset)) {
+      modelIds.push(model.modelId);
+      entityIds.push(entityId);
+      psetNames.push(psetName);
+      propNames.push(name);
+      values.push(rawVal);
+      valuesNum.push(toNum(rawVal));
+      // Predefined attributes are not unit-enriched at parse time, so the
+      // authored number stands in for the SI value (no unit conversion).
+      valuesSi.push(toNum(rawVal));
+      units.push(null);
+      dataTypes.push(null);
+    }
+  }
+
   for (const [entityId] of model.entities) {
     const edges = outEdges.get(entityId) ?? [];
     for (const { predicate, object: psetId } of edges) {
@@ -280,6 +351,11 @@ async function insertPsets(
       const psetEntity = model.entities.get(psetId);
       if (!psetEntity) continue;
       const psetName = psetEntity.name ?? psetEntity.type;
+
+      if (PREDEFINED_PROPERTY_SETS.has(psetEntity.type.toUpperCase())) {
+        emitPredefinedProperties(entityId, psetName, psetEntity);
+        continue;
+      }
 
       const propEdges = outEdges.get(psetId) ?? [];
       for (const { predicate: pp, object: propId } of propEdges) {
