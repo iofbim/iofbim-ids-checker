@@ -21,6 +21,19 @@ describe('restrictionToSql', () => {
     expect(p.params[2]).toBeCloseTo(100000.100001, 9);
   });
 
+  it('numeric tolerance bound is exactly representable decimal (widened by a rounding guard)', () => {
+    // tolerance/pass-comparison_tolerance_for_floating_point_negative_low_number_upper_bound:
+    // v = -0.0000001, the accepted value is the exact decimal upper bound
+    // 0.0000009000001, which binary n + d lands just below.
+    const p = restrictionToSql('pp.value', { kind: 'simpleValue', value: '-0.0000001' });
+    expect(p.params[2]!).toBeGreaterThanOrEqual(0.0000009000001);
+    // … while a fail value one step beyond the bound stays outside.
+    expect(p.params[2]!).toBeLessThan(0.00000090000011);
+    const q = restrictionToSql('pp.value', { kind: 'simpleValue', value: '0.0000001' });
+    expect(q.params[1]!).toBeLessThanOrEqual(-0.0000009000001);
+    expect(q.params[1]!).toBeGreaterThan(-0.00000090000011);
+  });
+
   it('boolean simpleValue → lower-case compare (IFC stores TRUE / FALSE)', () => {
     expect(restrictionToSql('e.name', { kind: 'simpleValue', value: 'true' })).toEqual({ sql: 'lower(e.name) = ?', params: ['true'] });
   });
@@ -97,9 +110,36 @@ describe('facetToSql', () => {
     expect(p.params).toEqual(['Roles', 'ARCHITECT']);
   });
 
-  it('attribute with a non-simpleValue name → always false (nothing to look up)', () => {
-    const facet: IdsFacet = { kind: 'attribute', name: { kind: 'pattern', pattern: '.*' } };
-    expect(facetToSql(facet)).toEqual({ sql: '1=0', params: [] });
+  it('attribute with a pattern name → any matching attribute name, value optional', () => {
+    // attribute/pass-name_restrictions_will_match_any_result_1_3: `.*Name.*`
+    // matches LayerSetName.
+    const facet: IdsFacet = { kind: 'attribute', name: { kind: 'pattern', pattern: '.*Name.*' } };
+    const p = facetToSql(facet);
+    expect(p.sql).toContain('EXISTS (SELECT 1 FROM entity_attributes ea');
+    expect(p.sql).toContain('regexp_full_match(ea.attr_name, ?)');
+    expect(p.sql).toContain("ea.value != ''");
+    expect(p.params).toEqual(['.*Name.*']);
+  });
+
+  it('attribute with an enumeration name → matches any of the listed attributes', () => {
+    const facet: IdsFacet = {
+      kind: 'attribute',
+      name: { kind: 'enumeration', values: ['Name', 'Description'] },
+    };
+    const p = facetToSql(facet);
+    expect(p.sql).toContain('(ea.attr_name = ? OR ea.attr_name = ?)');
+    expect(p.params).toEqual(['Name', 'Description']);
+  });
+
+  it('attribute with a name restriction and a value binds name then value', () => {
+    const facet: IdsFacet = {
+      kind: 'attribute',
+      name: { kind: 'enumeration', values: ['Name', 'Description'] },
+      value: { kind: 'simpleValue', value: 'Foo' },
+    };
+    const p = facetToSql(facet);
+    expect(p.sql).toContain('ea.value = ?');
+    expect(p.params).toEqual(['Name', 'Description', 'Foo']);
   });
 
   it('attribute presence check for a known Tier-1 column', () => {

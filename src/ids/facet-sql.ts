@@ -68,9 +68,15 @@ function valueEqualsSql(col: string, v: string): SqlPredicate {
   const n = numericLiteral(v);
   if (n === null) return { sql: `${col} = ?`, params: [v] };
   const d = Math.abs(n) * TOLERANCE + TOLERANCE;
+  // The IDS bounds are decimal numbers, but `n ± d` is computed in binary
+  // floating point and can land a hair *inside* the exact decimal bound. A
+  // conformance value that is written exactly as the bound (e.g. x = 0.0000009000001
+  // for v = -0.0000001) must still pass, so widen by a few ULPs (≈ bound·2⁻⁵²)
+  // — far below the tolerance, but enough to swallow the rounding.
+  const guard = Math.max(Math.abs(n - d), Math.abs(n + d)) * Number.EPSILON * 4;
   return {
     sql: `(${col} = ? OR TRY_CAST(${col} AS DOUBLE) BETWEEN ? AND ?)`,
-    params: [v, n - d, n + d],
+    params: [v, n - d - guard, n + d + guard],
   };
 }
 
@@ -163,6 +169,10 @@ export function facetAnchorSql(facet: IdsFacet): SqlPredicate {
       const col = ATTR_COL[attrName.toLowerCase()];
       // NULL is either $ or '': empty_attrs tells which (an authored '' is present)
       if (col) return { sql: `(${col} IS NOT NULL OR contains(coalesce(e.empty_attrs, ''), ?))`, params: [`,${attrName.toLowerCase()},`] };
+      // A Name restriction (pattern / enumeration / …) matches any attribute
+      // whose name satisfies it; the subject is present when one of them has a
+      // value (attribute-facet.md "Name restrictions will match any result").
+      if (facet.name.kind !== 'simpleValue') return attributeNameRestrictionSql(facet.name, undefined);
       if (!attrName) return ALWAYS_FALSE;
       return {
         sql: 'EXISTS (SELECT 1 FROM entity_attributes ea WHERE ea.model_id = e.model_id AND ea.entity_id = e.entity_id AND lower(ea.attr_name) = lower(?) AND ea.value IS NOT NULL)',
@@ -275,8 +285,47 @@ function attributeSql(facet: AttributeFacet): SqlPredicate {
     const val = restrictionToSql(col, facet.value);
     return { sql: `(${present}) AND (${val.sql})`, params: val.params };
   }
-  if (!attrName) return ALWAYS_FALSE; // non-simpleValue name — nothing to look up
-  return attributeExistsSql(attrName, facet.value);
+  if (facet.name.kind === 'simpleValue') {
+    if (!attrName) return ALWAYS_FALSE; // empty name — nothing to look up
+    return attributeExistsSql(attrName, facet.value);
+  }
+  // Name restriction (pattern / enumeration / …): match ANY attribute whose
+  // name satisfies it, and pass when any of those satisfies the requirement
+  // (UserManual/attribute-facet.md "Name restrictions will match any result").
+  return attributeNameRestrictionSql(facet.name, facet.value);
+}
+
+/**
+ * EXISTS over `entity_attributes` for an attribute facet whose **Name** is a
+ * restriction rather than a simple value. The IDS rule is existential: the
+ * name restriction matches every schema attribute whose name it accepts
+ * (e.g. `.*Name.*` matches `LayerSetName`, and the enumeration
+ * `Name|Description` matches both), and the facet passes when at least one of
+ * them has a (non-empty) value satisfying the optional value restriction.
+ * Attribute names are compared case-sensitively, like every other IDS string.
+ */
+function attributeNameRestrictionSql(
+  name: IdsValueRestriction,
+  value: IdsValueRestriction | undefined,
+): SqlPredicate {
+  const params: unknown[] = [];
+  const clauses = [
+    'ea.model_id = e.model_id',
+    'ea.entity_id = e.entity_id',
+    "(ea.value IS NOT NULL AND ea.value != '')",
+  ];
+  const n = restrictionToSql('ea.attr_name', name);
+  clauses.push(`(${n.sql})`);
+  params.push(...n.params);
+  if (value) {
+    const v = restrictionToSql('ea.value', value);
+    clauses.push(`(${v.sql})`);
+    params.push(...v.params);
+  }
+  return {
+    sql: `EXISTS (SELECT 1 FROM entity_attributes ea WHERE ${clauses.join(' AND ')})`,
+    params,
+  };
 }
 
 /**
