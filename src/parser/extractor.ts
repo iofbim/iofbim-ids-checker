@@ -145,6 +145,20 @@ const REL_HANDLERS: Record<string, RelHandler> = {
     }));
   },
 
+  IFCEXTERNALREFERENCERELATIONSHIP(_relId, args) {
+    // IFC4 resource-level relationship (no GlobalId): args[0]=Name, args[1]=Description,
+    // args[2]=RelatingReference, args[3]=(RelatedResourceObjects). How resources that are not
+    // IfcRoot (e.g. IfcMaterial) carry a classification reference; emitted as the same edge as
+    // IfcRelAssociatesClassification so the classifications view treats both alike.
+    const ref = refId(a(args, 2));
+    if (ref === null) return [];
+    return listRefs(a(args, 3)).map(obj => ({
+      subject: obj,
+      predicate: 'IfcRelAssociatesClassification',
+      object: ref,
+    }));
+  },
+
   IFCRELASSOCIATESDOCUMENT(_relId, args) {
     // args[4]=(RelatedObjects), args[5]=RelatingDocument
     const doc = refId(a(args, 5));

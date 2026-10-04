@@ -1,5 +1,30 @@
 import type * as duckdb from '@duckdb/duckdb-wasm';
 
+/** Levels of ReferencedSource walked above a classification reference */
+const CLASSIFICATION_DEPTH = 8;
+
+/**
+ * (model_id, ref_id, node_id) for every classification entity and each entity above it in
+ * its ReferencedSource chain (parent --hasClassificationReference--> child), the entity
+ * itself included: one SELECT per level, joined up `depth` times.
+ */
+function classificationChainSql(depth: number): string {
+  const levels: string[] = [];
+  for (let d = 0; d <= depth; d++) {
+    const joins = Array.from({ length: d }, (_, i) => {
+      const child = i === 0 ? 'r.entity_id' : `h${i}.subject`;
+      return `JOIN triples h${i + 1} ON h${i + 1}.model_id = r.model_id AND h${i + 1}.object = ${child} AND h${i + 1}.predicate = 'hasClassificationReference'`;
+    });
+    levels.push([
+      `SELECT r.model_id, r.entity_id AS ref_id, ${d === 0 ? 'r.entity_id' : `h${d}.subject`} AS node_id`,
+      'FROM entities r',
+      ...joins,
+      "WHERE upper(r.ifc_type) IN ('IFCCLASSIFICATIONREFERENCE', 'IFCCLASSIFICATION')",
+    ].join('\n'));
+  }
+  return levels.join('\nUNION ALL\n');
+}
+
 export const DDL = `
 CREATE TABLE IF NOT EXISTS entities (
   model_id            VARCHAR NOT NULL,
@@ -94,16 +119,59 @@ CREATE INDEX IF NOT EXISTS idx_entity_attr ON entity_attributes (model_id, entit
 -- entities on the object for the reference's scalar fields. The reference type
 -- is filtered so an unrelated same-predicate edge cannot leak in.
 
+-- Classification system and codes per classification entity, as IDS reads them
+-- (specifications.md, classification facet). A reference's system is the Name of the
+-- IfcClassification at the root of its ReferencedSource chain (the parser emits each
+-- link as parent --hasClassificationReference--> reference); its codes are the
+-- Identification of the reference and of every reference above it, so a value EF_25_10
+-- matches an element classified EF_25_10_25. An element associated straight to an
+-- IfcClassification ("lightweight") has the system and no code. A reference with no
+-- root has system ''. The chain is walked to a fixed depth (CLASSIFICATION_DEPTH levels
+-- above the reference) by joins, not a recursive CTE: DuckDB fails to bind a recursive
+-- CTE in a view used from a correlated EXISTS.
+CREATE VIEW IF NOT EXISTS classification_chain AS
+${classificationChainSql(CLASSIFICATION_DEPTH)};
+
+CREATE VIEW IF NOT EXISTS classification_codes AS
+WITH roots AS (
+  SELECT u.model_id, u.ref_id, max(COALESCE(n.name, '')) AS system
+  FROM classification_chain u
+  JOIN entities n ON n.model_id = u.model_id AND n.entity_id = u.node_id
+  WHERE upper(n.ifc_type) = 'IFCCLASSIFICATION'
+  GROUP BY u.model_id, u.ref_id
+)
+SELECT DISTINCT u.model_id                 AS model_id,
+       u.ref_id                            AS ref_id,
+       COALESCE(r.system, '')              AS system,
+       CASE WHEN upper(n.ifc_type) = 'IFCCLASSIFICATIONREFERENCE' THEN n.identification END AS code
+FROM classification_chain u
+JOIN entities n ON n.model_id = u.model_id AND n.entity_id = u.node_id
+LEFT JOIN roots r ON r.model_id = u.model_id AND r.ref_id = u.ref_id
+WHERE upper(n.ifc_type) = 'IFCCLASSIFICATIONREFERENCE'
+   OR u.node_id = u.ref_id;
+
+-- Classifications of each element: its own (IfcRelAssociatesClassification, and
+-- IfcExternalReferenceRelationship for resources, both stored as the same edge), plus
+-- those of its type (IfcRelDefinesByType, stored subject = type, object = occurrence)
+-- in any system the occurrence does not classify itself — occurrences override the
+-- type per system. code is NULL for a lightweight classification.
 CREATE VIEW IF NOT EXISTS classifications AS
-SELECT t.model_id                            AS model_id,
-       t.subject                             AS entity_id,
-       COALESCE(refe.name, '')               AS system,
-       COALESCE(refe.identification, '')     AS code
-FROM triples t
-JOIN entities refe ON refe.model_id = t.model_id AND refe.entity_id = t.object
-WHERE t.predicate = 'IfcRelAssociatesClassification'
-  AND upper(refe.ifc_type) LIKE '%CLASSIFICATION%'
-  AND (refe.name IS NOT NULL OR refe.identification IS NOT NULL);
+WITH own AS (
+  SELECT t.model_id, t.subject AS entity_id, cc.system, cc.code
+  FROM triples t
+  JOIN classification_codes cc ON cc.model_id = t.model_id AND cc.ref_id = t.object
+  WHERE t.predicate = 'IfcRelAssociatesClassification'
+)
+SELECT model_id, entity_id, system, code FROM own
+UNION
+SELECT dt.model_id, dt.object AS entity_id, ty.system, ty.code
+FROM triples dt
+JOIN own ty ON ty.model_id = dt.model_id AND ty.entity_id = dt.subject
+WHERE dt.predicate = 'IfcRelDefinesByType'
+  AND NOT EXISTS (
+    SELECT 1 FROM own o
+    WHERE o.model_id = dt.model_id AND o.entity_id = dt.object AND o.system = ty.system
+  );
 
 -- material_entity_id is the STEP express id of the material entity the name
 -- came from — NOT a UUID and NOT stable across re-exports. It is carried purely

@@ -132,12 +132,10 @@ export function facetAnchorSql(facet: IdsFacet): SqlPredicate {
       };
     }
     case 'property':       return propertySql({ ...facet, value: undefined, dataType: undefined });
-    // Any classification at all, whatever its system or fields (test case
-    // fail-an_optional_classification_value_fails_if_no_match: a classification named '')
+    // Any classification at all, own or from the type, whatever its system or fields (test
+    // case fail-an_optional_classification_value_fails_if_no_match: a classification named '')
     case 'classification': return {
-      sql: `EXISTS (SELECT 1 FROM triples ct JOIN entities ce ON ce.model_id = ct.model_id AND ce.entity_id = ct.object
-        WHERE ct.model_id = e.model_id AND ct.subject = e.entity_id AND ct.predicate = 'IfcRelAssociatesClassification'
-          AND upper(ce.ifc_type) LIKE '%CLASSIFICATION%')`,
+      sql: 'EXISTS (SELECT 1 FROM classifications cl WHERE cl.model_id = e.model_id AND cl.entity_id = e.entity_id)',
       params: [],
     };
     case 'material':       return materialSql({ ...facet, value: undefined });

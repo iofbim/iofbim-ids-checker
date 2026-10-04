@@ -30,8 +30,10 @@
  *   1.03 — emptyAttrs: the common string attributes authored as '' (read as null),
  *          so an IDS optional attribute facet can tell "present but empty" (must
  *          match, so fails) from "absent" ($, passes).
+ *   1.04 — IfcExternalReferenceRelationship: resources that are not IfcRoot (e.g.
+ *          IfcMaterial) get their classification references as edges.
  */
-export const PARSER_VERSION = '1.03';
+export const PARSER_VERSION = '1.04';
 
 export interface IfcEntity {
   id: number;
