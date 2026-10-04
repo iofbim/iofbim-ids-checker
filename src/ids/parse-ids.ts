@@ -235,9 +235,13 @@ function parseXsRestriction(restr: Element): IdsValueRestriction | undefined {
     .filter((v): v is string => v != null);
   if (enums.length > 0) return { kind: 'enumeration', values: enums };
 
-  // Pattern: <xs:pattern value="…"/>
-  const pat = child(restr, 'pattern')?.getAttribute('value');
-  if (pat) return { kind: 'pattern', pattern: pat };
+  // Pattern: <xs:pattern value="…"/>. Several patterns in one restriction are alternatives
+  // (XSD ORs pattern facets of the same derivation step): the value matches any of them.
+  const pats = children(restr, 'pattern')
+    .map((e) => e.getAttribute('value'))
+    .filter((v): v is string => !!v);
+  if (pats.length === 1) return { kind: 'pattern', pattern: pats[0]! };
+  if (pats.length > 1) return { kind: 'pattern', pattern: pats.map((p) => `(${p})`).join('|') };
 
   // String length: <xs:length/>, <xs:minLength/>, <xs:maxLength/>
   const len = numAttr(child(restr, 'length'));

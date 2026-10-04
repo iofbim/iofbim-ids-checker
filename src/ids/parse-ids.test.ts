@@ -145,6 +145,28 @@ describe('parseIds', () => {
     }
   });
 
+  it('reads several xs:pattern values as alternatives (OR)', () => {
+    const doc = parseIds(`
+      <ids xmlns="http://standards.buildingsmart.org/IDS" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+        <specifications>
+          <specification name="names">
+            <applicability><entity><name><simpleValue>IFCWALL</simpleValue></name></entity></applicability>
+            <requirements>
+              <attribute>
+                <name><simpleValue>Name</simpleValue></name>
+                <value><xs:restriction base="xs:string">
+                  <xs:pattern value="[a-z]{2}[0-9]{2}" />
+                  <xs:pattern value="[A-Z]{2}[0-9]{2}" />
+                </xs:restriction></value>
+              </attribute>
+            </requirements>
+          </specification>
+        </specifications>
+      </ids>`);
+    const facet = doc.specifications[0]!.requirements[0]!.facet;
+    expect(facet.kind === 'attribute' && facet.value).toEqual({ kind: 'pattern', pattern: '([a-z]{2}[0-9]{2})|([A-Z]{2}[0-9]{2})' });
+  });
+
   it('falls back to provided title when info/title absent', () => {
     const doc = parseIds(
       `<ids xmlns="http://standards.buildingsmart.org/IDS"><specifications/></ids>`,
