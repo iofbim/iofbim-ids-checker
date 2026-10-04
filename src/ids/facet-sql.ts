@@ -109,6 +109,43 @@ export function facetToSql(facet: IdsFacet): SqlPredicate {
   }
 }
 
+/**
+ * Whether the facet's subject is there at all, whatever its value: the named attribute has a
+ * value (an empty string counts), the property exists in its set, a classification exists (in
+ * the named system), the entity has any material. An **optional** requirement passes when its
+ * subject is absent, and otherwise must hold like a required one (IDS specifications.md:
+ * "either don't have the property, or if they do, it is of the expected datatype and value").
+ * Entity and partOf have no optional state in IDS; their anchor is the facet itself, so an
+ * optional one written anyway always passes.
+ */
+export function facetAnchorSql(facet: IdsFacet): SqlPredicate {
+  switch (facet.kind) {
+    case 'attribute': {
+      const attrName = facet.name.kind === 'simpleValue' ? facet.name.value : '';
+      const col = ATTR_COL[attrName.toLowerCase()];
+      // NULL is either $ or '': empty_attrs tells which (an authored '' is present)
+      if (col) return { sql: `(${col} IS NOT NULL OR contains(coalesce(e.empty_attrs, ''), ?))`, params: [`,${attrName.toLowerCase()},`] };
+      if (!attrName) return ALWAYS_FALSE;
+      return {
+        sql: 'EXISTS (SELECT 1 FROM entity_attributes ea WHERE ea.model_id = e.model_id AND ea.entity_id = e.entity_id AND lower(ea.attr_name) = lower(?) AND ea.value IS NOT NULL)',
+        params: [attrName],
+      };
+    }
+    case 'property':       return propertySql({ ...facet, value: undefined, dataType: undefined });
+    // Any classification at all, whatever its system or fields (test case
+    // fail-an_optional_classification_value_fails_if_no_match: a classification named '')
+    case 'classification': return {
+      sql: `EXISTS (SELECT 1 FROM triples ct JOIN entities ce ON ce.model_id = ct.model_id AND ce.entity_id = ct.object
+        WHERE ct.model_id = e.model_id AND ct.subject = e.entity_id AND ct.predicate = 'IfcRelAssociatesClassification'
+          AND upper(ce.ifc_type) LIKE '%CLASSIFICATION%')`,
+      params: [],
+    };
+    case 'material':       return materialSql({ ...facet, value: undefined });
+    case 'entity':
+    case 'partOf':         return facetToSql(facet);
+  }
+}
+
 function entitySql(facet: EntityFacet): SqlPredicate {
   const namePred = restrictionToSql('e.ifc_type', facet.name);
   if (!facet.predefinedType) return namePred;

@@ -8,7 +8,7 @@
  *      SQL column, then classify pass/fail per cardinality:
  *        required   → predicate must be TRUE
  *        prohibited → predicate must be FALSE
- *        optional   → ignored for pass/fail (informational)
+ *        optional   → TRUE, or the facet's subject is absent (anc${i}: see facetAnchorSql)
  *
  * All facet values are bound params (facet-sql.ts). The whole spec runs as one
  * SELECT per model returning (entity_id, ifc_type, name, req0, req1, …) so a
@@ -16,7 +16,7 @@
  */
 
 import { getDb, awaitIngest } from '../db/client.js';
-import { facetToSql, facetToValueSql } from './facet-sql.js';
+import { facetAnchorSql, facetToSql, facetToValueSql } from './facet-sql.js';
 import type { IdsSpecification, SpecResult, EntityOutcome, FailureReason, Uid, RequirementCheck } from './types.js';
 
 const uid = (modelId: string, entityId: number): Uid => `${modelId}:${entityId}`;
@@ -58,7 +58,8 @@ export async function evaluateSpec(
           const checks: RequirementCheck[] = [];
           spec.requirements.forEach((req, i) => {
             const ok = Boolean(row[`req${i}`]);
-            const satisfied = req.cardinality === 'prohibited' ? !ok : req.cardinality === 'optional' ? true : ok;
+            // Optional: absent is fine, present must match
+            const satisfied = req.cardinality === 'prohibited' ? !ok : req.cardinality === 'optional' ? ok || !row[`anc${i}`] : ok;
             // `val${i}` is only present when the facet has a scalar value.
             const hasVal = `val${i}` in row;
             const rawVal = row[`val${i}`];
@@ -171,6 +172,13 @@ function buildSpecSql(spec: IdsSpecification, modelId: string): { sql: string; p
     if (v) {
       reqCols.push(`(${v.sql}) AS val${i}`);
       reqParams.push(...v.params);
+    }
+
+    // Optional requirements also need to know whether their subject is there at all
+    if (req.cardinality === 'optional') {
+      const a = facetAnchorSql(req.facet);
+      reqCols.push(`CASE WHEN (${a.sql}) THEN true ELSE false END AS anc${i}`);
+      reqParams.push(...a.params);
     }
   });
 

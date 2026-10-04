@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS entities (
   predefined_type     VARCHAR,
   long_name           VARCHAR,
   identification      VARCHAR,
+  -- Common string attributes authored as '' (stored above as NULL), as ",name,tag,"
+  empty_attrs         VARCHAR,
   -- World-space axis-aligned bounding box (metres), meshed at parse time.
   -- NULL for non-physical entities that produced no geometry. Powers the
   -- spatial query filters (proximity / elevation / bounding box).

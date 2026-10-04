@@ -1,6 +1,6 @@
 import type { IfcEntity, RawAttribute } from './types.js';
 import type { TypedLine } from './typed-line.js';
-import { readString, readEnum, unwrap } from './typed-line.js';
+import { readString, readEnum, unwrap, isEmptyString } from './typed-line.js';
 
 export interface RawRecord {
   id: number;
@@ -620,6 +620,14 @@ export function recordToEntity(rec: RawRecord): IfcEntity {
 
   const longName = line ? readString(line, 'LongName') : extractLongName(type, args);
   if (longName) entity.longName = longName;
+
+  // '' reads as null above; remember which were authored empty (IDS: present, not absent)
+  if (line) {
+    const empty = ['Name', 'GlobalId', 'Description', 'ObjectType', 'Identification', 'Tag', 'LongName']
+      .filter((k) => isEmptyString(line, k))
+      .map((k) => k.toLowerCase());
+    if (empty.length) entity.emptyAttrs = empty;
+  }
 
   // Typed property value (IfcPropertySingleValue)
   if (type === PROP_SINGLE_VALUE) {

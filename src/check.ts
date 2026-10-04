@@ -4,12 +4,17 @@
  * parser / db / ids modules directly.
  *
  *   configureChecker({ duckdbBaseUrl, webIfcWasmPath });
- *   const model = await loadIfcModel(file, { onProgress });
+ *   const model = await loadIfcModel(file, { onProgress });     // parsed, or read from the cache
  *   const { document, results } = await checkIds(idsXml, [model.modelId]);
  *   await unloadIfcModel(model.modelId);
+ *
+ * Loaded models are saved in the browser (model-cache.ts) unless `cache: false`; a saved model
+ * comes back with restoreCachedModel(modelId) — no file, no parse.
  */
 
 import { webIfcWasmPath } from './config.js';
+import { restoreModel, serializeModel, StaleSnapshotError } from './db/snapshot.js';
+import { deleteCachedModel, readCachedModel, writeCachedModel, type CachedModelInfo } from './model-cache.js';
 import { awaitIngest, dropModel } from './db/client.js';
 import { ingestModel } from './db/ingest.js';
 import { evaluateDocument } from './ids/evaluate-ids.js';
@@ -29,6 +34,8 @@ export interface LoadedIfcModel {
 export interface LoadOptions {
   /** 0–100 while parsing and loading. */
   onProgress?: (percent: number) => void;
+  /** Read the model from the browser cache when it is there, and save it after parsing (default true) */
+  cache?: boolean;
 }
 
 /** SHA-256 hex of the file bytes: the same file always gets the same model id. */
@@ -69,15 +76,46 @@ function parseInWorker(buffer: ArrayBuffer, filename: string, onProgress?: (perc
 
 /** Parses an IFC file and loads it into the checker's database (replacing a model with the same content). */
 export async function loadIfcModel(file: Blob & { name?: string }, options: LoadOptions = {}): Promise<LoadedIfcModel> {
+  const useCache = options.cache !== false;
   const buffer = await file.arrayBuffer();
   const sha256 = await sha256Hex(buffer);
   const filename = file.name || 'model.ifc';
+
+  // The same content was loaded before: put its rows back instead of parsing
+  if (useCache) {
+    const restored = await restoreCachedModel(sha256).catch(() => null);
+    if (restored) {
+      options.onProgress?.(100);
+      return { ...restored, filename };
+    }
+  }
+
   const parsed = await parseInWorker(buffer, filename, options.onProgress);
   const model: ParsedModel = { ...parsed, modelId: sha256, sha256, accentColor: '' };
   ingestModel(model);
   await awaitIngest(model.modelId);
+  const loaded = { modelId: model.modelId, filename, schema: model.schema, entityCount: model.entities.size };
+  // Saving is a convenience: a full or unavailable store must not fail the load
+  if (useCache) await serializeModel(model.modelId).then((snap) => writeCachedModel(loaded, snap)).catch(() => undefined);
   options.onProgress?.(100);
-  return { modelId: model.modelId, filename, schema: model.schema, entityCount: model.entities.size };
+  return loaded;
+}
+
+/**
+ * Loads a model saved in this browser into the checker's database; null when it is not saved
+ * (or was saved by another format, which is then removed).
+ */
+export async function restoreCachedModel(modelId: string): Promise<LoadedIfcModel | null> {
+  const cached = await readCachedModel(modelId);
+  if (!cached) return null;
+  try {
+    await restoreModel(modelId, cached.snapshot);
+  } catch (err) {
+    if (err instanceof StaleSnapshotError) { await deleteCachedModel(modelId); return null; }
+    throw err;
+  }
+  const { filename, schema, entityCount }: CachedModelInfo = cached.info;
+  return { modelId, filename, schema, entityCount };
 }
 
 /** Removes a model's rows from the checker's database. */

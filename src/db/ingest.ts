@@ -92,6 +92,7 @@ async function insertEntities(
   const predefinedTypes:(string | null)[] = [];
   const longNames:      (string | null)[] = [];
   const identifications:(string | null)[] = [];
+  const emptyAttrs:     (string | null)[] = [];
   // Nullable Float64 columns — a plain (number|null)[] so Arrow keeps a nullable
   // DOUBLE (a Float64Array can't hold null). Entities without geometry get null.
   const bMinX: (number | null)[] = [];
@@ -121,6 +122,7 @@ async function insertEntities(
     predefinedTypes.push(e.predefinedType ?? null);
     longNames.push(e.longName ?? null);
     identifications.push(e.identification ?? null);
+    emptyAttrs.push(e.emptyAttrs?.length ? `,${e.emptyAttrs.join(',')},` : null);
     const bb = e.bbox ?? null;
     bMinX.push(bb ? bb[0] : null); bMinY.push(bb ? bb[1] : null); bMinZ.push(bb ? bb[2] : null);
     bMaxX.push(bb ? bb[3] : null); bMaxY.push(bb ? bb[4] : null); bMaxZ.push(bb ? bb[5] : null);
@@ -143,6 +145,7 @@ async function insertEntities(
     predefined_type: predefinedTypes,
     long_name:       longNames,
     identification:  identifications,
+    empty_attrs:     emptyAttrs,
     bbox_min_x:      bMinX,
     bbox_min_y:      bMinY,
     bbox_min_z:      bMinZ,

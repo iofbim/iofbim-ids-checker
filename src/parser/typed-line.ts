@@ -55,6 +55,16 @@ export function readString(line: TypedLine | undefined, key: string): string | n
   return s === '' ? null : s;
 }
 
+/** Whether a string attribute is authored as an empty (or blank) string, which readString returns as null */
+export function isEmptyString(line: TypedLine | undefined, key: string): boolean {
+  if (!line) return false;
+  const raw = line[key];
+  if (raw === null || raw === undefined) return false;
+  if (isBoxed(raw) && raw.type === 5 /* REF */) return false;
+  const v = unwrap(raw);
+  return typeof v === 'string' && v.trim() === '';
+}
+
 /**
  * Read an enum attribute (PredefinedType, …) as its literal name.
  *

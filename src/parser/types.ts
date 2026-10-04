@@ -27,8 +27,11 @@
  *          vertexCount / triangleCount / uniqueVertexCount / meshPartCount on
  *          every geometry-bearing entity (ADR-025). Requires a re-parse because
  *          cached models carry no counts and would read as zero-vertex elements.
+ *   1.03 — emptyAttrs: the common string attributes authored as '' (read as null),
+ *          so an IDS optional attribute facet can tell "present but empty" (must
+ *          match, so fails) from "absent" ($, passes).
  */
-export const PARSER_VERSION = '1.02';
+export const PARSER_VERSION = '1.03';
 
 export interface IfcEntity {
   id: number;
@@ -46,6 +49,12 @@ export interface IfcEntity {
   tag?: string | null;
   /** Last enum arg on most IfcProduct subtypes — e.g. WALL, COLUMN, DOOR */
   predefinedType?: string | null;
+  /**
+   * Lower-case names of the common string attributes (name, description, …) authored as
+   * an empty string: those read as null like `$`, but IDS tells them apart (an optional
+   * attribute facet fails on '' and passes on $). Absent when none.
+   */
+  emptyAttrs?: string[];
   /** IfcSpatialElement / IfcSpace — human-readable long name */
   longName?: string | null;
   coords?: [number, number, number];
