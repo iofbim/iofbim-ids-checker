@@ -7,7 +7,7 @@ import type { BimUseProfileId } from './bim-use-filter.js';
 import { filterTriples } from './bim-use-filter.js';
 import { IfcLoader } from './ifc-loader.js';
 import type { GeomStats } from './ifc-loader.js';
-import { resolveUnits, resolveValueUnit, type UnitTable } from './units.js';
+import { resolveUnits, resolveValueUnit, resolvePropertyValueUnit, type UnitTable } from './units.js';
 
 const QTY_TYPES = new Set([
   'IFCQUANTITYLENGTH', 'IFCQUANTITYAREA', 'IFCQUANTITYVOLUME',
@@ -26,7 +26,7 @@ const QTY_TYPES = new Set([
  * parsed model or the DuckDB store.
  */
 function enrichValueUnit(entity: IfcEntity, rec: RawRecord, units: UnitTable): void {
-  const isProp = entity.propValue != null;
+  const isProp = entity.propValue != null || (entity.propValues?.length ?? 0) > 0;
   const isQty = QTY_TYPES.has(rec.type) && entity.qtyValue != null;
   if (!isProp && !isQty) return;
 
@@ -41,6 +41,17 @@ function enrichValueUnit(entity: IfcEntity, rec: RawRecord, units: UnitTable): v
   } else {
     if (resolved) entity.propUnit = resolved.label;
     if (si !== null) entity.propValueSi = si;
+  }
+
+  // Multi-valued properties (enumerated / list / bounded / table) keep every
+  // authored value: normalize each one, so the IDS property facet can test each
+  // value against an SI IDS value (property-facet.md). The unit comes from the
+  // value's own unit slot, else the project default for its measure dimension.
+  for (const v of entity.propValues ?? []) {
+    const unit = resolvePropertyValueUnit(v.unitRef, v.measure, units);
+    const n = Number(v.value);
+    v.unit = unit?.label ?? null;
+    v.si = Number.isFinite(n) ? n * (unit?.siFactor ?? 1) : null;
   }
 }
 

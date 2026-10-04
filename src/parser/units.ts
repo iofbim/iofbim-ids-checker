@@ -181,3 +181,33 @@ export function resolveValueUnit(
   if (measure) return units.byType.get(measure) ?? null;
   return null;
 }
+
+/**
+ * The IfcUnitEnum unit type a measure is expressed in, by IFC naming convention:
+ * IFCLENGTHMEASURE → LENGTHUNIT, IFCAREAMEASURE → AREAUNIT, … . Returns null for
+ * non-measures (IFCLABEL, IFCREAL) and for measures whose derived name is not a
+ * real unit type (IFCCOUNTMEASURE → COUNTUNIT), so no bogus conversion happens.
+ */
+export function measureUnitType(measure: string): string | null {
+  const m = measure.toUpperCase();
+  if (!m.startsWith('IFC') || !m.endsWith('MEASURE')) return null;
+  return `${m.slice(3, -'MEASURE'.length)}UNIT`;
+}
+
+/**
+ * Resolve the unit a multi-valued property's value is expressed in: the record's
+ * explicit unit reference wins, else the project default for the value's measure
+ * dimension (a bare IFCLENGTHMEASURE uses the project's LENGTHUNIT).
+ */
+export function resolvePropertyValueUnit(
+  unitRef: number | null,
+  measure: string | null,
+  units: UnitTable,
+): ResolvedUnit | null {
+  if (unitRef !== null) {
+    const explicit = units.byId.get(unitRef);
+    if (explicit) return explicit;
+  }
+  const unitType = measure ? measureUnitType(measure) : null;
+  return unitType ? units.byType.get(unitType) ?? null : null;
+}

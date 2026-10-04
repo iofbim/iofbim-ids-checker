@@ -36,8 +36,28 @@
  *          IfcSurfaceStyleRefraction, colours, …) kept as entities instead of
  *          being filtered as geometry; web-ifc measure envelopes
  *          (`_internalValue`) are unwrapped so numeric attributes are stored.
+ *   1.06 — multi-valued IfcProperty* subtypes (enumerated / list / bounded /
+ *          table) keep every authored value in `propValues`, each SI-normalized
+ *          to the IDS unit so an IDS value check can test each one.
  */
-export const PARSER_VERSION = '1.05';
+export const PARSER_VERSION = '1.06';
+
+/**
+ * One authored value of a multi-valued IfcProperty* subtype
+ * (IfcPropertyEnumeratedValue / ListValue / BoundedValue / TableValue).
+ *
+ * `measure` is the IFC measure wrapper the value was authored in (e.g.
+ * `IFCLENGTHMEASURE`) and `unitRef` the record's explicit unit reference, if
+ * any. The extractor fills `si` (value normalized to the IDS SI base unit) and
+ * `unit` once the model's units are resolved.
+ */
+export interface PropertySubtypeValue {
+  value: string;
+  measure: string | null;
+  unitRef: number | null;
+  si?: number | null;
+  unit?: string | null;
+}
 
 export interface IfcEntity {
   id: number;
@@ -90,8 +110,14 @@ export interface IfcEntity {
   uniqueVertexCount?: number;
   /** Number of placed geometry parts composing this product's mesh. */
   meshPartCount?: number;
-  /** Decoded property value — set only on IfcPropertySingleValue entities */
+  /** Decoded property value — the aggregate display for a multi-valued property */
   propValue?: string | null;
+  /**
+   * Every authored value of a multi-valued IfcProperty* subtype. The IDS
+   * property facet tests each one (property-facet.md: with a simple IDS value,
+   * ANY IFC value may match), so the store gets one row per value.
+   */
+  propValues?: PropertySubtypeValue[];
   /** Resolved property unit label (e.g. MILLIMETRE) — IfcPropertySingleValue (PB-B) */
   propUnit?: string | null;
   /** Property value normalized to SI base units, when numeric (PB-B) */

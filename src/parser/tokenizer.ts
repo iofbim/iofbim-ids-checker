@@ -1,6 +1,6 @@
-import type { IfcEntity, RawAttribute } from './types.js';
+import type { IfcEntity, RawAttribute, PropertySubtypeValue } from './types.js';
 import type { TypedLine } from './typed-line.js';
-import { readString, readEnum, unwrap, isEmptyString } from './typed-line.js';
+import { readString, readEnum, unwrap, isEmptyString, readRef, readTypedValue } from './typed-line.js';
 
 export interface RawRecord {
   id: number;
@@ -441,6 +441,112 @@ export function decodePropertySubtypeValue(
   }
 }
 
+/** Decode one wrapped STEP value, keeping its IFC measure wrapper and unit slot. */
+function decodeTypedValue(
+  raw: string,
+  args: string[],
+  unitArgIndex: number | null,
+): PropertySubtypeValue | null {
+  if (!raw || raw === '$' || raw === '*') return null;
+  const value = decodeArg(raw);
+  if (value === null) return null;
+  const wrapper = raw.match(/^([A-Z0-9_]+)\s*\(/);
+  return {
+    value,
+    measure: wrapper?.[1] ?? null,
+    unitRef: unitArgIndex !== null ? refId(args[unitArgIndex] ?? '') : null,
+  };
+}
+
+/**
+ * Every authored value of a multi-valued IfcProperty* subtype, so the IDS
+ * property facet can test each one: with a simple IDS value, at least one IFC
+ * value must match (UserManual/property-facet.md). Each value keeps the IFC
+ * measure it was wrapped in and the record arg index of the unit that applies,
+ * so the extractor can SI-normalize it per value.
+ *
+ *   IfcPropertyEnumeratedValue [2]=values
+ *   IfcPropertyListValue       [2]=values, unit [3]
+ *   IfcPropertyBoundedValue    [2]=upper [3]=lower [5]=setpoint, unit [4]
+ *   IfcPropertyTableValue      [2]=definingValues (unit [5]),
+ *                              [3]=definedValues  (unit [6])
+ *
+ * Single-valued and unsupported (reference / complex) subtypes return [].
+ */
+export function decodePropertySubtypeValues(
+  type: string,
+  args: string[],
+): PropertySubtypeValue[] {
+  const list = (raw: string, unitArgIndex: number | null): PropertySubtypeValue[] => {
+    if (!raw || raw === '$' || !raw.startsWith('(')) return [];
+    return splitArgs(raw.slice(1, -1))
+      .map((token) => decodeTypedValue(token, args, unitArgIndex))
+      .filter((v): v is PropertySubtypeValue => v !== null);
+  };
+  const one = (raw: string, unitArgIndex: number | null): PropertySubtypeValue[] => {
+    const v = decodeTypedValue(raw, args, unitArgIndex);
+    return v ? [v] : [];
+  };
+  switch (type) {
+    case 'IFCPROPERTYENUMERATEDVALUE':
+      return list(args[2] ?? '', null);
+    case 'IFCPROPERTYLISTVALUE':
+      return list(args[2] ?? '', 3);
+    case 'IFCPROPERTYBOUNDEDVALUE':
+      return [
+        ...one(args[2] ?? '', 4),
+        ...one(args[3] ?? '', 4),
+        ...one(args[5] ?? '', 4),
+      ];
+    case 'IFCPROPERTYTABLEVALUE':
+      return [
+        ...list(args[2] ?? '', 5),
+        ...list(args[3] ?? '', 6),
+      ];
+    default:
+      return [];
+  }
+}
+
+/**
+ * Multi-valued property values read from a web-ifc typed line. The positional
+ * `args` string cannot supply these reliably: web-ifc decodes a measure to a
+ * bare real and drops its wrapper, so only the named attribute keeps the IFC
+ * measure (IFCLENGTHMEASURE, …) needed to SI-normalize each value.
+ */
+export function decodePropertySubtypeValuesFromLine(
+  type: string,
+  line: TypedLine,
+): PropertySubtypeValue[] {
+  const values = (attr: unknown, unitRef: number | null): PropertySubtypeValue[] => {
+    const items = Array.isArray(attr) ? attr : [attr];
+    return items
+      .map((item) => readTypedValue(item))
+      .filter((v): v is { value: string; measure: string | null } => v !== null)
+      .map((v) => ({ value: v.value, measure: v.measure, unitRef }));
+  };
+  const unit = readRef(line, 'Unit');
+  switch (type) {
+    case 'IFCPROPERTYENUMERATEDVALUE':
+      return values(line.EnumerationValues, null);
+    case 'IFCPROPERTYLISTVALUE':
+      return values(line.ListValues, unit);
+    case 'IFCPROPERTYBOUNDEDVALUE':
+      return [
+        ...values(line.UpperBoundValue, unit),
+        ...values(line.LowerBoundValue, unit),
+        ...values(line.SetPointValue, unit),
+      ];
+    case 'IFCPROPERTYTABLEVALUE':
+      return [
+        ...values(line.DefiningValues, readRef(line, 'DefiningUnit')),
+        ...values(line.DefinedValues, readRef(line, 'DefinedUnit')),
+      ];
+    default:
+      return [];
+  }
+}
+
 /** Quantity value arg positions per IfcQuantity* subtype */
 const QTY_VALUE_ARG: Record<string, number> = {
   IFCQUANTITYLENGTH:  3,
@@ -641,6 +747,13 @@ export function recordToEntity(rec: RawRecord): IfcEntity {
     const { value, unit } = decodePropertySubtypeValue(type, args);
     if (value !== null) entity.propValue = value;
     if (unit !== null) entity.propUnit = unit;
+    // Keep every authored value for the IDS property facet, which must test
+    // each one (property-facet.md). Prefer the typed line: it retains each
+    // value's IFC measure wrapper, which web-ifc drops from the args.
+    const values = line
+      ? decodePropertySubtypeValuesFromLine(type, line)
+      : decodePropertySubtypeValues(type, args);
+    if (values.length > 0) entity.propValues = values;
   }
 
   // Typed quantity value (IfcQuantity*)

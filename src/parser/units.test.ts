@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveUnits, resolveValueUnit } from './units.js';
+import { resolveUnits, resolveValueUnit, measureUnitType, resolvePropertyValueUnit } from './units.js';
 import type { RawRecord } from './tokenizer.js';
 
 // Typed-line box helpers (mirror web-ifc shapes).
@@ -84,6 +84,45 @@ describe('resolveValueUnit', () => {
   it('falls back to the project default for the measure type', () => {
     const u = resolveValueUnit('IFCQUANTITYAREA', { Unit: null }, table);
     expect(u!.label).toBe('SQUARE METRE');
+  });
+});
+
+describe('measureUnitType', () => {
+  it('derives the IfcUnitEnum unit type from the measure name', () => {
+    expect(measureUnitType('IFCLENGTHMEASURE')).toBe('LENGTHUNIT');
+    expect(measureUnitType('IFCAREAMEASURE')).toBe('AREAUNIT');
+    expect(measureUnitType('IFCVOLUMEMEASURE')).toBe('VOLUMEUNIT');
+  });
+
+  it('returns null for non-measures and dimensionless measures', () => {
+    expect(measureUnitType('IFCLABEL')).toBeNull();
+    expect(measureUnitType('IFCREAL')).toBeNull();
+    // COUNTUNIT is not an IfcUnitEnum value, so no conversion is attempted.
+    expect(measureUnitType('IFCCOUNTMEASURE')).toBe('COUNTUNIT');
+  });
+});
+
+describe('resolvePropertyValueUnit', () => {
+  const recs = [
+    unitRec(1, 'IFCSIUNIT', { UnitType: enumTok('LENGTHUNIT'), Prefix: enumTok('MILLI'), Name: enumTok('METRE') }),
+    unitRec(2, 'IFCSIUNIT', { UnitType: enumTok('LENGTHUNIT'), Prefix: null, Name: enumTok('METRE') }),
+    unitRec(3, 'IFCUNITASSIGNMENT', { Units: [ref(1)] }),
+  ];
+  const table = resolveUnits(recs);
+
+  it('uses the project default unit for the value’s measure', () => {
+    const u = resolvePropertyValueUnit(null, 'IFCLENGTHMEASURE', table);
+    expect(u!.label).toBe('MILLIMETRE');
+    expect(u!.siFactor).toBeCloseTo(1e-3);
+  });
+
+  it('prefers an explicit unit reference over the measure default', () => {
+    const u = resolvePropertyValueUnit(2, 'IFCLENGTHMEASURE', table);
+    expect(u!.label).toBe('METRE');
+  });
+
+  it('returns null when neither the unit ref nor the measure resolves', () => {
+    expect(resolvePropertyValueUnit(null, 'IFCLABEL', table)).toBeNull();
   });
 });
 

@@ -67,6 +67,25 @@ describe('restrictionToSql', () => {
     expect(p.sql).toBe('pp.value_si >= ? AND pp.value_si < ?');
     expect(p.params).toEqual([10, 20]);
   });
+
+  it('numeric simpleValue with a SI column → also matches the normalized value', () => {
+    // An IDS measure value is in SI while the model may use project units, e.g.
+    // IDS 1 m against an authored IFC length of 1000 mm stored as value_si = 1.
+    const p = restrictionToSql('pp.value', { kind: 'simpleValue', value: '1' }, 'pp.value_si');
+    expect(p.sql).toBe(
+      '(pp.value = ? OR TRY_CAST(pp.value AS DOUBLE) BETWEEN ? AND ? OR pp.value_si BETWEEN ? AND ?)',
+    );
+    expect(p.params[0]).toBe('1');
+    expect(p.params).toHaveLength(5);
+    expect(p.params[3]).toBeCloseTo(0.999998, 9);
+    expect(p.params[4]).toBeCloseTo(1.000002, 9);
+  });
+
+  it('numeric enumeration with a SI column → normalized match per member', () => {
+    const p = restrictionToSql('pp.value', { kind: 'enumeration', values: ['1', '2'] }, 'pp.value_si');
+    expect((p.sql.match(/value_si BETWEEN/g) ?? []).length).toBe(2);
+    expect(p.params).toHaveLength(10);
+  });
 });
 
 describe('facetToSql', () => {

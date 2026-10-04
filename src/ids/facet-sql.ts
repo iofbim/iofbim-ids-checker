@@ -62,8 +62,13 @@ function numericLiteral(v: string): number | null {
  * value also matches a stored number within the tolerance, v ± (|v|·ε + ε), so "42" matches
  * 42. and 42.0 (type casting) and 99999.899999 equals 100000; booleans are written true /
  * false in IDS and stored upper case by IFC, so they compare case-insensitively.
+ *
+ * When `numCol` is given, a numeric value also matches its SI-normalized column, because an
+ * IDS value with a measure dataType is expressed in SI while the model may use project units
+ * (e.g. IDS 1 m matches an authored IFC length of 1000 mm). Multi-valued properties store one
+ * row per value, each carrying its own SI value.
  */
-function valueEqualsSql(col: string, v: string): SqlPredicate {
+function valueEqualsSql(col: string, v: string, numCol?: string): SqlPredicate {
   if (v === 'true' || v === 'false') return { sql: `lower(${col}) = ?`, params: [v] };
   const n = numericLiteral(v);
   if (n === null) return { sql: `${col} = ?`, params: [v] };
@@ -74,9 +79,14 @@ function valueEqualsSql(col: string, v: string): SqlPredicate {
   // for v = -0.0000001) must still pass, so widen by a few ULPs (≈ bound·2⁻⁵²)
   // — far below the tolerance, but enough to swallow the rounding.
   const guard = Math.max(Math.abs(n - d), Math.abs(n + d)) * Number.EPSILON * 4;
+  const lo = n - d - guard;
+  const hi = n + d + guard;
+  const params: unknown[] = [v, lo, hi];
+  const si = numCol ? ` OR ${numCol} BETWEEN ? AND ?` : '';
+  if (numCol) params.push(lo, hi);
   return {
-    sql: `(${col} = ? OR TRY_CAST(${col} AS DOUBLE) BETWEEN ? AND ?)`,
-    params: [v, n - d - guard, n + d + guard],
+    sql: `(${col} = ? OR TRY_CAST(${col} AS DOUBLE) BETWEEN ? AND ?${si})`,
+    params,
   };
 }
 
@@ -96,11 +106,11 @@ export function restrictionToSql(
 
   switch (restr.kind) {
     case 'simpleValue':
-      return valueEqualsSql(col, restr.value);
+      return valueEqualsSql(col, restr.value, numCol);
 
     case 'enumeration': {
       if (restr.values.length === 0) return ALWAYS_FALSE;
-      const each = restr.values.map((v) => valueEqualsSql(col, v));
+      const each = restr.values.map((v) => valueEqualsSql(col, v, numCol));
       return { sql: `(${each.map((p) => p.sql).join(' OR ')})`, params: each.flatMap((p) => p.params) };
     }
 
@@ -362,7 +372,8 @@ function attributeExistsSql(attrName: string, value: IdsValueRestriction | undef
  * only pass the type. Matching against the type's psets as well fixes that.
  *
  * propertySet and baseName are matched (case-insensitive); the optional value
- * restriction applies against `value` (text) / `value_si` (numeric bounds).
+ * restriction applies against `value` (text) and `value_si` (numeric values and
+ * bounds), so a multi-valued property's every stored value is tested.
  */
 function propertySql(facet: PropertyFacet): SqlPredicate {
   // Build the shared pset/property/value filter once, parameterised on the

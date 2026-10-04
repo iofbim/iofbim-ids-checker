@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { extractFromRecords } from './extractor.js';
-import { tokenize, splitArgs, refId, listRefs, decodeStepString, stripTypeCast } from './tokenizer.js';
+import { tokenize, splitArgs, refId, listRefs, decodeStepString, stripTypeCast, decodePropertySubtypeValues } from './tokenizer.js';
+import type { RawRecord } from './tokenizer.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -100,6 +101,85 @@ describe('extractFromRecords — schema detection', () => {
   it('detects IFC4', () => {
     const m = extract(makeIfc(['#1=IFCPROJECT(\'p1\',$,\'P\',$,$,$,$,(),$);']));
     expect(m.schema).toBe('IFC4');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-valued properties (IDS: with a simple value, ANY IFC value may match)
+// ---------------------------------------------------------------------------
+
+describe('multi-valued property values', () => {
+  const enumTok = (v: string) => ({ value: v, type: 3 });
+  const ref = (id: number) => ({ value: id, type: 5 });
+  const label = (v: string) => ({ value: v, type: 1, name: 'IFCLABEL' });
+  const length = (v: string) => ({
+    type: 4, _internalValue: v, _representationValue: Number(v), name: 'IFCLENGTHMEASURE',
+  });
+
+  it('decodes every value of each subtype from the positional args', () => {
+    expect(decodePropertySubtypeValues('IFCPROPERTYLISTVALUE', splitArgs("'Foo',$,(IFCLABEL('X'),IFCLABEL('Y')),$")))
+      .toEqual([
+        { value: 'X', measure: 'IFCLABEL', unitRef: null },
+        { value: 'Y', measure: 'IFCLABEL', unitRef: null },
+      ]);
+    // bounded: upper, lower and setpoint all count as values
+    expect(decodePropertySubtypeValues(
+      'IFCPROPERTYBOUNDEDVALUE',
+      splitArgs("'Foo',$,IFCLENGTHMEASURE(5000.),IFCLENGTHMEASURE(1000.),$,IFCLENGTHMEASURE(3000.)"),
+    )).toEqual([
+      { value: '5000.', measure: 'IFCLENGTHMEASURE', unitRef: null },
+      { value: '1000.', measure: 'IFCLENGTHMEASURE', unitRef: null },
+      { value: '3000.', measure: 'IFCLENGTHMEASURE', unitRef: null },
+    ]);
+  });
+
+  it('keeps every value from the typed line and SI-normalizes project units', () => {
+    const recs: RawRecord[] = [
+      { id: 2, type: 'IFCSIUNIT', args: '', line: { UnitType: enumTok('LENGTHUNIT'), Prefix: enumTok('MILLI'), Name: enumTok('METRE') } },
+      { id: 6, type: 'IFCUNITASSIGNMENT', args: '', line: { Units: [ref(2)] } },
+      {
+        id: 10,
+        type: 'IFCPROPERTYBOUNDEDVALUE',
+        args: '',
+        line: {
+          Name: label('Foo'),
+          UpperBoundValue: length('5000.'),
+          LowerBoundValue: length('1000.'),
+          Unit: null,
+          SetPointValue: length('3000.'),
+        },
+      },
+    ];
+    const { entities } = extractFromRecords(recs, 'IFC4', 'test.ifc');
+    expect(entities.get(10)!.propValues).toEqual([
+      { value: '5000.', measure: 'IFCLENGTHMEASURE', unitRef: null, unit: 'MILLIMETRE', si: 5 },
+      { value: '1000.', measure: 'IFCLENGTHMEASURE', unitRef: null, unit: 'MILLIMETRE', si: 1 },
+      { value: '3000.', measure: 'IFCLENGTHMEASURE', unitRef: null, unit: 'MILLIMETRE', si: 3 },
+    ]);
+  });
+
+  it('reads table defining and defined values, converting each with its own unit', () => {
+    const recs: RawRecord[] = [
+      { id: 2, type: 'IFCSIUNIT', args: '', line: { UnitType: enumTok('LENGTHUNIT'), Prefix: enumTok('MILLI'), Name: enumTok('METRE') } },
+      { id: 6, type: 'IFCUNITASSIGNMENT', args: '', line: { Units: [ref(2)] } },
+      {
+        id: 10,
+        type: 'IFCPROPERTYTABLEVALUE',
+        args: '',
+        line: {
+          Name: label('Foo'),
+          DefiningValues: [label('X')],
+          DefinedValues: [length('1000.')],
+          DefiningUnit: null,
+          DefinedUnit: null,
+        },
+      },
+    ];
+    const { entities } = extractFromRecords(recs, 'IFC4', 'test.ifc');
+    expect(entities.get(10)!.propValues).toEqual([
+      { value: 'X', measure: 'IFCLABEL', unitRef: null, unit: null, si: null },
+      { value: '1000.', measure: 'IFCLENGTHMEASURE', unitRef: null, unit: 'MILLIMETRE', si: 1 },
+    ]);
   });
 });
 

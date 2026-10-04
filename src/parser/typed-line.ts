@@ -100,3 +100,21 @@ export function readRef(line: TypedLine | undefined, key: string): number | null
   const v = raw.value;
   return typeof v === 'number' ? v : null;
 }
+
+/**
+ * Read a boxed value as its display string plus the wrapper's IFC type name
+ * (e.g. "IFCLENGTHMEASURE"), or null when the attribute is absent or a
+ * reference. The type name drives per-value SI normalization for multi-valued
+ * properties, whose measure wrapper web-ifc drops from the positional args.
+ */
+export function readTypedValue(attr: unknown): { value: string; measure: string | null } | null {
+  if (attr === null || attr === undefined) return null;
+  if (isBoxed(attr) && attr.type === 5 /* REF */) return null;
+  const v = unwrap(attr);
+  if (v === null || typeof v === 'object') return null;
+  if (typeof v === 'boolean') return { value: v ? 'TRUE' : 'FALSE', measure: null };
+  const s = String(v).trim();
+  if (s === '') return null;
+  const name = isBoxed(attr) ? (attr as { name?: unknown }).name : undefined;
+  return { value: s, measure: typeof name === 'string' ? name.toUpperCase() : null };
+}

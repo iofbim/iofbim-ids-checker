@@ -242,6 +242,24 @@ async function insertPsets(
     const propName = propEntity.name;
     if (!propName) return;
 
+    // Multi-valued properties (enumerated / list / bounded / table) contribute
+    // one row per authored value, so the IDS property facet tests every value
+    // (property-facet.md: with a simple IDS value, ANY IFC value may match).
+    const multi = propEntity.propValues;
+    if (multi && multi.length > 0) {
+      for (const v of multi) {
+        modelIds.push(model.modelId);
+        entityIds.push(entityId);
+        psetNames.push(psetName);
+        propNames.push(propName);
+        values.push(v.value);
+        valuesNum.push(toNum(v.value));
+        valuesSi.push(v.si ?? toNum(v.value));
+        units.push(v.unit ?? null);
+      }
+      return;
+    }
+
     const rawVal = propEntity.propValue ?? propEntity.qtyValue ?? null;
     // SI-normalized value resolved at parse time (PB-B); fall back to the
     // authored number when no unit was resolvable so numeric queries still
