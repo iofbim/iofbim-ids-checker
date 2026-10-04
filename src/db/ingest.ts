@@ -196,10 +196,18 @@ async function insertTriples(
 // pset_properties table
 // Walk (occurrence): entity → IfcRelDefinesByProperties → IfcPropertySet → hasProperty → value
 // Walk (type):       IFC*TYPE → hasPropertySet          → IfcPropertySet → hasProperty → value
-// IfcComplexProperty nodes carry no value of their own; recurse through their
-// own hasProperty children so nested leaf values are not dropped.
+// A complex property (IfcComplexProperty / IfcPhysicalComplexQuantity) and a
+// reference value (IfcPropertyReferenceValue) are not supported by IDS, so they
+// are skipped entirely rather than emitted as property rows.
 // See ADR-016.
 // ---------------------------------------------------------------------------
+
+/** IFC property kinds IDS cannot address, so they must never match a property facet. */
+const UNSUPPORTED_PROPERTY_TYPES = new Set([
+  'IFCCOMPLEXPROPERTY',
+  'IFCPHYSICALCOMPLEXQUANTITY',
+  'IFCPROPERTYREFERENCEVALUE',
+]);
 
 async function insertPsets(
   db: duckdb.AsyncDuckDB,
@@ -216,28 +224,14 @@ async function insertPsets(
   const valuesNum:  (number | null)[] = [];
   const valuesSi:   (number | null)[] = [];
   const units:      (string | null)[] = [];
+  const dataTypes:  (string | null)[] = [];
 
-  // Emit one row for a resolved leaf property/quantity. IfcComplexProperty
-  // nodes have no value — recurse into their hasProperty children instead.
-  // `seen` guards against pathological cyclic complex-property graphs.
-  function emitProperty(
-    entityId: number,
-    psetName: string,
-    propId: number,
-    seen: Set<number>,
-  ): void {
-    if (seen.has(propId)) return;
-    seen.add(propId);
+  // Emit one row for a resolved leaf property/quantity. Complex and reference
+  // properties are unsupported by IDS and produce no row.
+  function emitProperty(entityId: number, psetName: string, propId: number): void {
     const propEntity = model.entities.get(propId);
     if (!propEntity) return;
-
-    if (propEntity.type.toUpperCase() === 'IFCCOMPLEXPROPERTY') {
-      for (const { predicate: cp, object: childId } of outEdges.get(propId) ?? []) {
-        if (cp !== 'hasProperty') continue;
-        emitProperty(entityId, psetName, childId, seen);
-      }
-      return;
-    }
+    if (UNSUPPORTED_PROPERTY_TYPES.has(propEntity.type.toUpperCase())) return;
 
     const propName = propEntity.name;
     if (!propName) return;
@@ -273,6 +267,7 @@ async function insertPsets(
     valuesNum.push(toNum(rawVal));
     valuesSi.push(siVal);
     units.push(propEntity.propUnit ?? propEntity.qtyUnit ?? null);
+    dataTypes.push(propEntity.propType ?? propEntity.qtyType ?? null);
   }
 
   for (const [entityId] of model.entities) {
@@ -289,7 +284,7 @@ async function insertPsets(
       const propEdges = outEdges.get(psetId) ?? [];
       for (const { predicate: pp, object: propId } of propEdges) {
         if (pp !== 'hasProperty' && pp !== 'hasQuantity') continue;
-        emitProperty(entityId, psetName, propId, new Set());
+        emitProperty(entityId, psetName, propId);
       }
     }
   }
@@ -305,6 +300,7 @@ async function insertPsets(
     value_num:     valuesNum,
     value_si:      valuesSi,
     unit:          units,
+    data_type:     dataTypes,
   });
 
   await insertArrowTable(db, conn, 'pset_properties', table);

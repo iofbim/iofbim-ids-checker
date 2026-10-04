@@ -11,6 +11,7 @@
  */
 
 import { xsdToRe2 } from './xsd-regex.js';
+import { MEASURE_UNIT_TYPE } from '../parser/units.js';
 import type {
   IdsFacet,
   IdsValueRestriction,
@@ -41,6 +42,14 @@ const ATTR_COL: Record<string, string> = {
 };
 
 const ALWAYS_FALSE: SqlPredicate = { sql: '1=0', params: [] };
+
+/** Measure data types whose values IDS compares in SI units (UserManual/units.md). */
+const MEASURE_TYPES = new Set(Object.keys(MEASURE_UNIT_TYPE));
+
+/** Whether an IDS `dataType` names an IFC measure (IFCLENGTHMEASURE, …). */
+function isMeasureDataType(dataType: string | undefined): boolean {
+  return dataType != null && MEASURE_TYPES.has(dataType.toUpperCase());
+}
 
 // ---------------------------------------------------------------------------
 // Value restriction → SQL comparison on a given column
@@ -88,6 +97,39 @@ function valueEqualsSql(col: string, v: string, numCol?: string): SqlPredicate {
     sql: `(${col} = ? OR TRY_CAST(${col} AS DOUBLE) BETWEEN ? AND ?${si})`,
     params,
   };
+}
+
+/**
+ * A numeric `col` equals IDS value `v` within the IDS tolerance. Unlike
+ * {@link valueEqualsSql} there is no text form: the column already holds a
+ * number, and the IDS value is compared numerically.
+ */
+function numericValueEqualsSql(col: string, v: string): SqlPredicate {
+  const n = numericLiteral(v);
+  if (n === null) return { sql: `${col} = ?`, params: [v] };
+  const d = Math.abs(n) * TOLERANCE + TOLERANCE;
+  return { sql: `(${col} BETWEEN ? AND ?)`, params: [n - d, n + d] };
+}
+
+/**
+ * A measure restriction compared against the SI-normalized numeric column
+ * (`value_si`), so a model authored in mm and an IDS value in m agree. Simple
+ * values and enumerations are numeric only; bounds/pattern/length reuse the
+ * shared builder.
+ */
+function measureRestrictionToSql(col: string, restr: IdsValueRestriction | undefined): SqlPredicate {
+  if (!restr) return { sql: `${col} IS NOT NULL`, params: [] };
+  switch (restr.kind) {
+    case 'simpleValue':
+      return numericValueEqualsSql(col, restr.value);
+    case 'enumeration': {
+      if (restr.values.length === 0) return ALWAYS_FALSE;
+      const each = restr.values.map((v) => numericValueEqualsSql(col, v));
+      return { sql: `(${each.map((p) => p.sql).join(' OR ')})`, params: each.flatMap((p) => p.params) };
+    }
+    default:
+      return restrictionToSql(col, restr, col);
+  }
 }
 
 /**
@@ -390,8 +432,19 @@ function propertySql(facet: PropertyFacet): SqlPredicate {
     parts.push(`(${bn.sql})`);
     params.push(...bn.params);
 
+    // An IDS dataType must equal the stored IFC value type; complex and reference
+    // properties were never ingested, so this also rejects them.
+    if (facet.dataType) {
+      parts.push(`upper(${alias}.data_type) = upper(?)`);
+      params.push(facet.dataType);
+    }
+
     if (facet.value) {
-      const v = restrictionToSql(`${alias}.value`, facet.value, `${alias}.value_si`);
+      // A measure's IDS value is in SI, so compare it against the SI-normalized
+      // column rather than the authored text (mm vs m).
+      const v = isMeasureDataType(facet.dataType)
+        ? measureRestrictionToSql(`${alias}.value_si`, facet.value)
+        : restrictionToSql(`${alias}.value`, facet.value, `${alias}.value_si`);
       parts.push(`(${v.sql})`);
       params.push(...v.params);
     }

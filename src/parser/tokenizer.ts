@@ -1,6 +1,6 @@
 import type { IfcEntity, RawAttribute, PropertySubtypeValue } from './types.js';
 import type { TypedLine } from './typed-line.js';
-import { readString, readEnum, unwrap, isEmptyString, readRef, readTypedValue } from './typed-line.js';
+import { readString, readEnum, unwrap, isEmptyString, readRef, readTypedValue, readValueType } from './typed-line.js';
 
 export interface RawRecord {
   id: number;
@@ -593,6 +593,14 @@ const PROP_SUBTYPES = new Set([
   'IFCPROPERTYTABLEVALUE', 'IFCPROPERTYREFERENCEVALUE', 'IFCCOMPLEXPROPERTY',
 ]);
 
+/** IfcProperty* subtype → typed-line attribute whose value type the IDS compares. */
+const PROP_VALUE_TYPE_ATTR: Record<string, string> = {
+  IFCPROPERTYENUMERATEDVALUE: 'EnumerationValues',
+  IFCPROPERTYLISTVALUE:       'ListValues',
+  IFCPROPERTYBOUNDEDVALUE:    'UpperBoundValue',
+  IFCPROPERTYTABLEVALUE:      'DefiningValues',
+};
+
 /** IfcQuantity* subtype → typed-line attribute holding the numeric value. */
 const QTY_VALUE_ATTR: Record<string, string> = {
   IFCQUANTITYLENGTH: 'LengthValue',
@@ -740,6 +748,10 @@ export function recordToEntity(rec: RawRecord): IfcEntity {
     const { value, unit } = line ? decodePropValueTyped(line) : decodePropValue(args);
     if (value !== null) entity.propValue = value;
     if (unit !== null) entity.propUnit = unit;
+    // The value's IFC type (IFCLENGTHMEASURE, IFCLABEL, …) — web-ifc keeps it in
+    // the value box's `name`; the legacy tokenizer path still spells it as a cast.
+    const valueType = (line ? readValueType(line, 'NominalValue') : null) ?? typeCastName(args[2]);
+    if (valueType !== null) entity.propType = valueType;
   } else if (PROP_SUBTYPES.has(type)) {
     // Other IfcProperty* subtypes — enumerated, list, bounded, table, reference, complex.
     // These carry nested value lists/refs that the typed line does not flatten,
@@ -754,6 +766,9 @@ export function recordToEntity(rec: RawRecord): IfcEntity {
       ? decodePropertySubtypeValuesFromLine(type, line)
       : decodePropertySubtypeValues(type, args);
     if (values.length > 0) entity.propValues = values;
+    const attr = PROP_VALUE_TYPE_ATTR[type];
+    const valueType = (line && attr ? readValueType(line, attr) : null) ?? typeCastName(args[2]);
+    if (valueType !== null) entity.propType = valueType;
   }
 
   // Typed quantity value (IfcQuantity*)
@@ -761,6 +776,9 @@ export function recordToEntity(rec: RawRecord): IfcEntity {
     const { value, unit } = line ? decodeQtyValueTyped(type, line) : decodeQtyValue(type, args);
     if (value !== null) entity.qtyValue = value;
     if (unit !== null) entity.qtyUnit = unit;
+    const attr = QTY_VALUE_ATTR[type];
+    const valueType = (line && attr ? readValueType(line, attr) : null) ?? typeCastName(args[QTY_VALUE_ARG[type] ?? -1]);
+    if (valueType !== null) entity.qtyType = valueType;
   }
 
   // Full attribute list for the Properties panel — prefer named attributes from
@@ -769,6 +787,20 @@ export function recordToEntity(rec: RawRecord): IfcEntity {
   if (rawAttributes.length) entity.rawAttributes = rawAttributes;
 
   return entity;
+}
+
+/**
+ * The IFC type-cast name at the head of a raw STEP value token, e.g.
+ * `IFCLENGTHMEASURE(2.)` → `IFCLENGTHMEASURE`. Null when the token is a bare
+ * literal (`'foo'`, `42.`, `$`) or a reference. Used only on the legacy
+ * tokenizer path; the web-ifc path reads the type from the value box's `name`.
+ */
+function typeCastName(raw: string | undefined): string | null {
+  if (!raw) return null;
+  // A single value is `IFCLABEL('x')`; a value list is `(IFCLABEL('a'),…)` —
+  // take the first type-cast in either.
+  const m = /([A-Z][A-Z0-9_]*)\(/.exec(raw);
+  return m ? m[1]! : null;
 }
 
 /**

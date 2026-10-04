@@ -86,7 +86,10 @@ CREATE TABLE IF NOT EXISTS pset_properties (
   value         VARCHAR,           -- authored value as text (always present)
   value_num     DOUBLE,            -- authored value as a number, when numeric
   value_si      DOUBLE,            -- value normalized to SI base units (PB-B)
-  unit          VARCHAR            -- resolved authored unit label, e.g. MILLIMETRE
+  unit          VARCHAR,           -- resolved authored unit label, e.g. MILLIMETRE
+  -- IFC value type of the property/quantity (IFCLENGTHMEASURE, IFCLABEL, …).
+  -- An IDS dataType must equal this, and a measure is compared in SI (value_si).
+  data_type     VARCHAR
 );
 CREATE INDEX IF NOT EXISTS idx_pset ON pset_properties (model_id, entity_id);
 CREATE INDEX IF NOT EXISTS idx_pset_name ON pset_properties (model_id, pset_name, property_name);

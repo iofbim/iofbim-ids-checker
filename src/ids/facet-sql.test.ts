@@ -199,6 +199,44 @@ describe('facetToSql', () => {
     ]);
   });
 
+  it('property facet → dataType is checked against the stored value type', () => {
+    const facet: IdsFacet = {
+      kind: 'property',
+      propertySet: { kind: 'simpleValue', value: 'Foo_Bar' },
+      baseName: { kind: 'simpleValue', value: 'Foo' },
+      dataType: 'IFCLABEL',
+      value: { kind: 'simpleValue', value: 'X' },
+    };
+    const p = facetToSql(facet);
+    expect(p.sql).toContain('upper(pp.data_type) = upper(?)');
+    // A non-measure value still compares against the authored text.
+    expect(p.sql).toContain('pp.value = ?');
+    // The filter is emitted once per branch (direct then type-inherited).
+    expect(p.params).toEqual([
+      'Foo_Bar', 'Foo', 'IFCLABEL', 'X',
+      'Foo_Bar', 'Foo', 'IFCLABEL', 'X',
+    ]);
+  });
+
+  it('property facet → a measure value compares the SI-normalized column', () => {
+    const facet: IdsFacet = {
+      kind: 'property',
+      propertySet: { kind: 'simpleValue', value: 'Foo_Bar' },
+      baseName: { kind: 'simpleValue', value: 'Foo' },
+      dataType: 'IFCLENGTHMEASURE',
+      value: { kind: 'simpleValue', value: '2' },
+    };
+    const p = facetToSql(facet);
+    // mm-authored model values were converted to metres at ingest, so the IDS
+    // value (in metres) is compared against value_si, not the authored text.
+    expect(p.sql).toContain('pp.value_si BETWEEN ? AND ?');
+    expect(p.params[0]).toBe('Foo_Bar');
+    expect(p.params[1]).toBe('Foo');
+    expect(p.params[2]).toBe('IFCLENGTHMEASURE');
+    expect(p.params[3]).toBeCloseTo(1.999997, 9);
+    expect(p.params[4]).toBeCloseTo(2.000003, 9);
+  });
+
   it('classification facet → EXISTS over classifications view', () => {
     const facet: IdsFacet = {
       kind: 'classification',

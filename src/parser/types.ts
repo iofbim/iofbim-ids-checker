@@ -39,8 +39,11 @@
  *   1.06 — multi-valued IfcProperty* subtypes (enumerated / list / bounded /
  *          table) keep every authored value in `propValues`, each SI-normalized
  *          to the IDS unit so an IDS value check can test each one.
+ *   1.07 — pset_properties carries the value's IFC data type (`propType`), and
+ *          single-value measures resolve their unit from that measure (SI
+ *          conversion), so IDS dataType and unit comparisons work.
  */
-export const PARSER_VERSION = '1.06';
+export const PARSER_VERSION = '1.07';
 
 /**
  * One authored value of a multi-valued IfcProperty* subtype
@@ -118,12 +121,20 @@ export interface IfcEntity {
    * ANY IFC value may match), so the store gets one row per value.
    */
   propValues?: PropertySubtypeValue[];
+  /**
+   * IFC value type of the property's value (e.g. `IFCLENGTHMEASURE`,
+   * `IFCLABEL`), from the web-ifc typed value box. An IDS `dataType` must match
+   * this exactly, and measure types are converted to SI before comparison.
+   */
+  propType?: string | null;
   /** Resolved property unit label (e.g. MILLIMETRE) — IfcPropertySingleValue (PB-B) */
   propUnit?: string | null;
   /** Property value normalized to SI base units, when numeric (PB-B) */
   propValueSi?: number | null;
   /** Decoded quantity value — set only on IfcQuantity* entities */
   qtyValue?: string | null;
+  /** IFC measure type of the quantity's value (e.g. `IFCLENGTHMEASURE`). */
+  qtyType?: string | null;
   /** Resolved quantity unit label (e.g. SQUARE METRE) — IfcQuantity* (PB-B) */
   qtyUnit?: string | null;
   /** Quantity value normalized to SI base units, when numeric (PB-B) */

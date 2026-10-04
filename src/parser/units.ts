@@ -151,6 +151,54 @@ export function resolveUnits(records: RawRecord[]): UnitTable {
   return { byId, byType };
 }
 
+/**
+ * Measure (defined-type) name → the IfcUnitEnum whose project default unit the
+ * measure is expressed in. Mirrors the IDS units table
+ * (UserManual/units.md), which lists the SI unit each measure is compared in.
+ * Used to convert a property's own measure value (IfcPropertySingleValue) to SI;
+ * quantities also carry the same name on their value box.
+ */
+export const MEASURE_UNIT_TYPE: Record<string, string> = {
+  IFCABSORBEDDOSEMEASURE: 'ABSORBEDDOSEUNIT',
+  IFCAMOUNTOFSUBSTANCEMEASURE: 'AMOUNTOFSUBSTANCEUNIT',
+  IFCAREAMEASURE: 'AREAUNIT',
+  IFCDOSEEQUIVALENTMEASURE: 'DOSEEQUIVALENTUNIT',
+  IFCELECTRICCAPACITANCEMEASURE: 'ELECTRICCAPACITANCEUNIT',
+  IFCELECTRICCHARGEMEASURE: 'ELECTRICCHARGEUNIT',
+  IFCELECTRICCONDUCTANCEMEASURE: 'ELECTRICCONDUCTANCEUNIT',
+  IFCELECTRICCURRENTMEASURE: 'ELECTRICCURRENTUNIT',
+  IFCELECTRICRESISTANCEMEASURE: 'ELECTRICRESISTANCEUNIT',
+  IFCELECTRICVOLTAGEMEASURE: 'ELECTRICVOLTAGEUNIT',
+  IFCENERGYMEASURE: 'ENERGYUNIT',
+  IFCFORCEMEASURE: 'FORCEUNIT',
+  IFCFREQUENCYMEASURE: 'FREQUENCYUNIT',
+  IFCILLUMINANCEMEASURE: 'ILLUMINANCEUNIT',
+  IFCINDUCTANCEMEASURE: 'INDUCTANCEUNIT',
+  IFCLENGTHMEASURE: 'LENGTHUNIT',
+  IFCLUMINOUSFLUXMEASURE: 'LUMINOUSFLUXUNIT',
+  IFCLUMINOUSINTENSITYMEASURE: 'LUMINOUSINTENSITYUNIT',
+  IFCMAGNETICFLUXDENSITYMEASURE: 'MAGNETICFLUXDENSITYUNIT',
+  IFCMAGNETICFLUXMEASURE: 'MAGNETICFLUXUNIT',
+  IFCMASSMEASURE: 'MASSUNIT',
+  IFCNONNEGATIVELENGTHMEASURE: 'LENGTHUNIT',
+  IFCPLANARFORCEMEASURE: 'PLANARFORCEUNIT',
+  IFCPLANEANGLEMEASURE: 'PLANEANGLEUNIT',
+  IFCPOSITIVELENGTHMEASURE: 'LENGTHUNIT',
+  IFCPOSITIVEPLANEANGLEMEASURE: 'PLANEANGLEUNIT',
+  IFCPOWERMEASURE: 'POWERUNIT',
+  IFCPRESSUREMEASURE: 'PRESSUREUNIT',
+  IFCRADIOACTIVITYMEASURE: 'RADIOACTIVITYUNIT',
+  IFCROTATIONALFREQUENCYMEASURE: 'ROTATIONALFREQUENCYUNIT',
+  IFCSOLIDANGLEMEASURE: 'SOLIDANGLEUNIT',
+  IFCSOUNDPOWERMEASURE: 'SOUNDPOWERUNIT',
+  IFCSOUNDPRESSUREMEASURE: 'SOUNDPRESSUREUNIT',
+  IFCTHERMALCONDUCTIVITYMEASURE: 'THERMALCONDUCTANCEUNIT',
+  IFCTHERMALTRANSMITTANCEMEASURE: 'THERMALTRANSMITTANCEUNIT',
+  IFCTHERMODYNAMICTEMPERATUREMEASURE: 'THERMODYNAMICTEMPERATUREUNIT',
+  IFCTIMEMEASURE: 'TIMEUNIT',
+  IFCVOLUMEMEASURE: 'VOLUMEUNIT',
+};
+
 /** IfcQuantity* type → the IfcUnitEnum measure type its value is expressed in. */
 const QTY_MEASURE_TYPE: Record<string, string> = {
   IFCQUANTITYLENGTH: 'LENGTHUNIT',
@@ -165,19 +213,23 @@ const QTY_MEASURE_TYPE: Record<string, string> = {
 /**
  * Resolve the authored unit for a property/quantity entity.
  *   - explicit `Unit` ref on the entity wins;
- *   - else the project default for the quantity's measure type;
+ *   - else the project default for the value's own measure type
+ *     (`valueType`, e.g. IFCLENGTHMEASURE on an IfcPropertySingleValue, which
+ *     unlike a quantity carries no quantity-class measure type);
+ *   - else the project default for the quantity class's measure type;
  *   - else null (unitless / unknown).
  */
 export function resolveValueUnit(
   type: string,
   line: TypedLine | undefined,
   units: UnitTable,
+  valueType?: string | null,
 ): ResolvedUnit | null {
   if (line) {
     const explicit = readRef(line, 'Unit');
     if (explicit !== null && units.byId.has(explicit)) return units.byId.get(explicit)!;
   }
-  const measure = QTY_MEASURE_TYPE[type];
+  const measure = (valueType ? MEASURE_UNIT_TYPE[valueType] : undefined) ?? QTY_MEASURE_TYPE[type];
   if (measure) return units.byType.get(measure) ?? null;
   return null;
 }

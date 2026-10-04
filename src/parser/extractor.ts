@@ -30,7 +30,10 @@ function enrichValueUnit(entity: IfcEntity, rec: RawRecord, units: UnitTable): v
   const isQty = QTY_TYPES.has(rec.type) && entity.qtyValue != null;
   if (!isProp && !isQty) return;
 
-  const resolved = resolveValueUnit(rec.type, rec.line, units);
+  // A single-value property's unit comes from its own measure type (e.g. a
+  // length measure uses the project LENGTHUNIT); a quantity's from its class.
+  const valueType = isQty ? entity.qtyType : entity.propType;
+  const resolved = resolveValueUnit(rec.type, rec.line, units, valueType);
   const rawValue = isQty ? entity.qtyValue : entity.propValue;
   const num = rawValue != null ? Number(rawValue) : NaN;
   const si = Number.isFinite(num) && resolved ? num * resolved.siFactor : null;

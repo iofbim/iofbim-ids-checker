@@ -73,3 +73,45 @@ describe('recordToEntity — rawAttributes', () => {
     expect(entity.rawAttributes![3]!.value).toBeNull();
   });
 });
+
+describe('recordToEntity — property value type (IDS dataType)', () => {
+  it('captures the NominalValue measure of an IfcPropertySingleValue', () => {
+    const line: TypedLine = {
+      expressID: 10, type: 999,
+      Name: { value: 'Foo', type: 1, name: 'IFCIDENTIFIER' },
+      NominalValue: { type: 4, _internalValue: '2.', _representationValue: 2, name: 'IFCLENGTHMEASURE' },
+    };
+    const entity = recordToEntity({ id: 10, type: 'IFCPROPERTYSINGLEVALUE', args: "'Foo',$,'2.',$", line });
+    expect(entity.propValue).toBe('2.');
+    expect(entity.propType).toBe('IFCLENGTHMEASURE');
+  });
+
+  it('captures the quantity measure of an IfcQuantityLength', () => {
+    const line: TypedLine = {
+      expressID: 11, type: 999,
+      Name: { value: 'Foo', type: 1, name: 'IFCLABEL' },
+      LengthValue: { type: 4, _internalValue: '42.', _representationValue: 42, name: 'IFCLENGTHMEASURE' },
+    };
+    const entity = recordToEntity({ id: 11, type: 'IFCQUANTITYLENGTH', args: "'Foo',$,$,42.,$", line });
+    expect(entity.qtyValue).toBe('42.');
+    expect(entity.qtyType).toBe('IFCLENGTHMEASURE');
+  });
+
+  it('reads a list-valued property type from the first typed member', () => {
+    const line: TypedLine = {
+      expressID: 12, type: 999,
+      Name: { value: 'Foo', type: 1, name: 'IFCLABEL' },
+      ListValues: [
+        { value: 'a', type: 1, name: 'IFCLABEL' },
+        { value: 'b', type: 1, name: 'IFCLABEL' },
+      ],
+    };
+    const entity = recordToEntity({ id: 12, type: 'IFCPROPERTYLISTVALUE', args: "'Foo',$,('a','b'),$", line });
+    expect(entity.propType).toBe('IFCLABEL');
+  });
+
+  it('reads the value type from a type-cast on the legacy string path', () => {
+    const entity = recordToEntity({ id: 13, type: 'IFCPROPERTYSINGLEVALUE', args: "'Foo',$,IFCMASSMEASURE(2.),$" });
+    expect(entity.propType).toBe('IFCMASSMEASURE');
+  });
+});

@@ -71,6 +71,23 @@ export function readString(line: TypedLine | undefined, key: string): string | n
   return s === '' ? null : s;
 }
 
+/**
+ * The IFC value type name a boxed attribute carries (e.g. `IFCLENGTHMEASURE`,
+ * `IFCLABEL`, `IFCMASSMEASURE`). web-ifc stores this in the wrapper's `name`
+ * field; it is what an IDS `dataType` is compared against. Returns null when the
+ * attribute is absent or is not a typed value box.
+ */
+export function readValueType(line: TypedLine | undefined, key: string): string | null {
+  if (!line) return null;
+  const raw = line[key];
+  // A list-valued property (enumerated / list / table) boxes each member; the
+  // first typed member gives the list's type.
+  const box = Array.isArray(raw) ? raw.find(isBoxed) : raw;
+  if (!isBoxed(box)) return null;
+  const name = (box as { name?: unknown }).name;
+  return typeof name === 'string' && name.trim() !== '' ? name.trim().toUpperCase() : null;
+}
+
 /** Whether a string attribute is authored as an empty (or blank) string, which readString returns as null */
 export function isEmptyString(line: TypedLine | undefined, key: string): boolean {
   if (!line) return false;

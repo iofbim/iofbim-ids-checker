@@ -126,6 +126,24 @@ describe('resolvePropertyValueUnit', () => {
   });
 });
 
+describe('resolveValueUnit — measure-driven unit for single-value properties', () => {
+  const recs = [
+    unitRec(1, 'IFCSIUNIT', { UnitType: enumTok('LENGTHUNIT'), Prefix: enumTok('MILLI'), Name: enumTok('METRE') }),
+    unitRec(2, 'IFCSIUNIT', { UnitType: enumTok('MASSUNIT'), Prefix: null, Name: enumTok('GRAM') }),
+    unitRec(3, 'IFCUNITASSIGNMENT', { Units: [ref(1), ref(2)] }),
+  ];
+  const table = resolveUnits(recs);
+
+  it('uses the value measure type, not the property class, to find the unit', () => {
+    // An IfcPropertySingleValue is not a quantity class, so without valueType the
+    // unit is unresolvable and the value would never be converted to SI.
+    expect(resolveValueUnit('IFCPROPERTYSINGLEVALUE', { Unit: null }, table)).toBeNull();
+    const u = resolveValueUnit('IFCPROPERTYSINGLEVALUE', { Unit: null }, table, 'IFCLENGTHMEASURE');
+    expect(u!.label).toBe('MILLIMETRE');
+    expect(u!.siFactor).toBeCloseTo(1e-3);
+  });
+});
+
 describe('SI normalization keeps full precision in the store', () => {
   // The store (and DuckDB) must stay lossless — rounding is display-only.
   it('stores the SI-normalized and authored quantity values at full precision', async () => {
@@ -145,5 +163,22 @@ describe('SI normalization keeps full precision in the store', () => {
     expect(qty.qtyValue).toBe('17.79099885504');
     expect(qty.qtyValueSi).toBe(17.79099885504);
     expect(qty.qtyUnit).toBe('SQUARE METRE');
+  });
+
+  it('converts a single-value length measure from mm to the SI metre', async () => {
+    const { extractFromRecords } = await import('./extractor.js');
+    const recs: RawRecord[] = [
+      unitRec(1, 'IFCSIUNIT', { UnitType: enumTok('LENGTHUNIT'), Prefix: enumTok('MILLI'), Name: enumTok('METRE') }),
+      unitRec(2, 'IFCUNITASSIGNMENT', { Units: [ref(1)] }),
+      unitRec(20, 'IFCPROPERTYSINGLEVALUE', {
+        Name: { value: 'Foo', type: 1, name: 'IFCIDENTIFIER' },
+        NominalValue: { type: 4, _internalValue: '2000.', _representationValue: 2000, name: 'IFCLENGTHMEASURE' },
+      }),
+    ];
+    const { entities } = extractFromRecords(recs, 'IFC4', 'test.ifc');
+    const prop = entities.get(20)!;
+    expect(prop.propType).toBe('IFCLENGTHMEASURE');
+    expect(prop.propUnit).toBe('MILLIMETRE');
+    expect(prop.propValueSi).toBeCloseTo(2);
   });
 });
