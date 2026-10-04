@@ -7,7 +7,9 @@
  * value is one of:
  *
  *   - a measure/simple-value wrapper:  `{ value: 'Foo', type, name }`  (IfcLabel,
- *     IfcReal, IfcText, IfcIdentifier, IfcBoolean, IfcLengthMeasure, …)
+ *     IfcReal, IfcText, IfcIdentifier, IfcBoolean, IfcLengthMeasure, …). web-ifc
+ *     0.0.77 spells measures `{ type: 4, _internalValue, _representationValue,
+ *     name }` instead — see {@link isBoxed}.
  *   - an enum token:                   `{ type: 3 /* ENUM *\/, value: 'STANDARD' }`
  *   - a `Handle<T>`:                   `{ value: 123, type: 5 /* REF *\/ }`  (an
  *     express-ID reference to another line)
@@ -22,9 +24,19 @@
 /** A web-ifc typed line object as returned by `GetLine` (named attributes). */
 export type TypedLine = Record<string, unknown> & { expressID?: number; type?: number };
 
-/** True for the boxed objects web-ifc returns for values, enums, and handles. */
-function isBoxed(v: unknown): v is { value?: unknown; type?: number } {
-  return typeof v === 'object' && v !== null && 'value' in (v as object);
+/**
+ * True for every envelope web-ifc returns for values, enums and handles:
+ *   - `{ value, type }`                                          strings / labels / enums / refs
+ *   - `{ type: 4, _internalValue, _representationValue, name }`  measures (IfcReal, …)
+ *     (web-ifc 0.0.77 emits this second shape for measures instead of `value`)
+ */
+function isBoxed(
+  v: unknown,
+): v is { value?: unknown; _internalValue?: unknown; _representationValue?: unknown; type?: number } {
+  return (
+    typeof v === 'object' && v !== null &&
+    ('value' in v || '_internalValue' in v || '_representationValue' in v)
+  );
 }
 
 /**
@@ -35,7 +47,11 @@ function isBoxed(v: unknown): v is { value?: unknown; type?: number } {
  */
 export function unwrap(attr: unknown): unknown {
   if (attr === null || attr === undefined) return null;
-  if (isBoxed(attr)) return attr.value ?? null;
+  if (isBoxed(attr)) {
+    // A measure token carries its authored literal in `_internalValue`; keep that
+    // spelling ("42.") over the JS number so precision/formatting survive.
+    return attr.value ?? attr._internalValue ?? attr._representationValue ?? null;
+  }
   return attr;
 }
 

@@ -32,8 +32,12 @@
  *          match, so fails) from "absent" ($, passes).
  *   1.04 — IfcExternalReferenceRelationship: resources that are not IfcRoot (e.g.
  *          IfcMaterial) get their classification references as edges.
+ *   1.05 — styling/presentation classes (IfcSurfaceStyleRendering,
+ *          IfcSurfaceStyleRefraction, colours, …) kept as entities instead of
+ *          being filtered as geometry; web-ifc measure envelopes
+ *          (`_internalValue`) are unwrapped so numeric attributes are stored.
  */
-export const PARSER_VERSION = '1.04';
+export const PARSER_VERSION = '1.05';
 
 export interface IfcEntity {
   id: number;

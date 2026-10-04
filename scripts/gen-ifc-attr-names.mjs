@@ -8,7 +8,7 @@
 //     instead of the flat "Ref".
 //
 //  2. IFC_GEOMETRY_TYPES — every concrete class descending from a geometry /
-//     representation / styling / placement root. This REPLACES the two
+//     representation / placement root. This REPLACES the two
 //     hand-maintained name lists that used to live in ifc-loader.ts and
 //     geometry-filter.ts. Those lists had diverged from each other (15 names in
 //     one, 52 in the other), contained 5 names that do not exist in IFC4X3
@@ -32,10 +32,16 @@ const SRC = process.env.IFC_ATTR_SOURCE ?? resolve(__dirname, '../dev/referenceD
 const OUT = resolve(__dirname, '../src/parser/ifc-attr-names.generated.ts');
 
 /**
- * Supertypes whose entire concrete subtree is geometry/representation/styling
- * and therefore never becomes a graph node. Chosen to cover the schema's
- * geometry surface without touching anything semantic — see the assertion at
- * the bottom, which fails the build if a semantic class ever lands here.
+ * Supertypes whose entire concrete subtree is geometry/representation and
+ * therefore never becomes a graph node. Chosen to cover the schema's geometry
+ * surface without touching anything semantic — see the assertion at the bottom,
+ * which fails the build if a semantic class ever lands here.
+ *
+ * Styling values (IfcPresentationStyle / IfcPresentationItem /
+ * IfcColourSpecification) are deliberately NOT roots: they are attribute-bearing
+ * resources an IDS attribute facet must be able to address
+ * (IfcSurfaceStyleRendering.DiffuseColour, IfcSurfaceStyleRefraction.RefractionIndex,
+ * IfcColourRgb, …), not representation geometry.
  */
 const GEOMETRY_ROOTS = [
   'IfcRepresentationItem',          // all curves, surfaces, solids, points, topology
@@ -46,13 +52,10 @@ const GEOMETRY_ROOTS = [
   'IfcProductRepresentation',       // IfcProductDefinitionShape, IfcMaterialDefinitionRepresentation
   'IfcRepresentationMap',           // the mapped-geometry source block
   'IfcOrientedEdge',                // topology; not under IfcRepresentationItem in 4X3
-  'IfcPresentationStyle',           // IfcSurfaceStyle / IfcCurveStyle / IfcTextStyle / …
-  'IfcPresentationItem',            // colours, textures, style-rendering items
   'IfcPresentationLayerAssignment', // (+ WithStyle)
   'IfcShapeAspect',
   'IfcCartesianPointList',
   'IfcTextureCoordinate',
-  'IfcColourSpecification',
 ];
 
 /**
@@ -149,6 +152,8 @@ const SEMANTIC_CANARIES = [
   'IfcClassification', 'IfcClassificationReference', 'IfcDocumentReference',
   'IfcTask', 'IfcActor', 'IfcRoad', 'IfcBridge', 'IfcAlignment',
   'IfcBuildingElementProxy', 'IfcDistributionPort', 'IfcOpeningElement',
+  // Styling values must stay IDS-addressable (attribute facets target them).
+  'IfcSurfaceStyleRendering', 'IfcSurfaceStyleRefraction', 'IfcColourRgb',
 ];
 const leaked = SEMANTIC_CANARIES.filter(n => geometry.has(n.toUpperCase()));
 if (leaked.length) {
@@ -168,7 +173,7 @@ const body =
   `export const IFC_ATTR_NAMES: Record<string, readonly string[]> = ${JSON.stringify(out)};\n\n` +
   `/**\n` +
   ` * Every CONCRETE IFC4X3 class descending from a geometry / representation /\n` +
-  ` * styling / placement root — i.e. every class that is discarded at parse time\n` +
+  ` * placement root — i.e. every class that is discarded at parse time\n` +
   ` * and never becomes a graph node. Derived from the schema, so it cannot drift\n` +
   ` * out of sync with reality the way the previous hand-maintained lists did.\n` +
   ` */\n` +

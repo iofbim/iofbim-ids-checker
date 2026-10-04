@@ -7,6 +7,10 @@ const label = (v: string) => ({ value: v, type: 1, name: 'IfcLabel' });
 const enumTok = (v: string) => ({ value: v, type: 3 });
 const ref = (id: number) => ({ value: id, type: 5 });
 const real = (v: number) => ({ value: v, type: 4, name: 'IfcReal' });
+// web-ifc 0.0.77 measure envelope: no `value`, the authored literal is `_internalValue`.
+const measure = (internal: string, representation: number) => ({
+  type: 4, _internalValue: internal, _representationValue: representation, name: 'IfcReal',
+});
 
 describe('typed-line readers', () => {
   it('unwraps boxed values, leaves primitives, maps null', () => {
@@ -14,6 +18,14 @@ describe('typed-line readers', () => {
     expect(unwrap(real(2.5))).toBe(2.5);
     expect(unwrap(null)).toBeNull();
     expect(unwrap(42)).toBe(42);
+  });
+
+  it('unwraps the measure envelope, preferring the authored literal', () => {
+    // IfcSurfaceStyleRefraction(#1, RefractionIndex) arrives this way and must not
+    // be stored as NULL just because it has no `value` key.
+    expect(unwrap(measure('42.', 42))).toBe('42.');
+    expect(readString({ RefractionIndex: measure('42.', 42) }, 'RefractionIndex')).toBe('42.');
+    expect(readRef({ RefractionIndex: measure('42.', 42) }, 'RefractionIndex')).toBeNull();
   });
 
   it('readString rejects refs and empty strings', () => {
@@ -84,5 +96,17 @@ describe('recordToEntity — typed line path (schema-robust)', () => {
     };
     const e = recordToEntity(rec);
     expect(e.qtyValue).toBe('12.5');
+  });
+
+  it('decodes a measure-envelope attribute (web-ifc 0.0.77) into the raw list', () => {
+    const rec: RawRecord = {
+      id: 9,
+      type: 'IFCQUANTITYAREA',
+      args: '',
+      line: { Name: label('NetSideArea'), AreaValue: measure('12.5', 12.5) },
+    };
+    const e = recordToEntity(rec);
+    expect(e.qtyValue).toBe('12.5');
+    expect(e.rawAttributes?.find(a => a.name === 'AreaValue')?.value).toBe('12.5');
   });
 });

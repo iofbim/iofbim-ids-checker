@@ -15,7 +15,7 @@
 
 import { IFC_GEOMETRY_TYPES } from './ifc-attr-names.generated.js';
 
-/** Every concrete geometry / representation / styling / placement class. */
+/** Every concrete geometry / representation / placement class. */
 export const GEOMETRY_TYPES = IFC_GEOMETRY_TYPES;
 
 /**

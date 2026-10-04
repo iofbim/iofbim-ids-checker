@@ -137,6 +137,18 @@ describe('extractFromRecords — geometry exclusion', () => {
     expect(m.entities.has(2)).toBe(false);
   });
 
+  // Styling values are IDS-addressable resources, not representation geometry:
+  // attribute facets target them (IfcSurfaceStyleRendering.DiffuseColour, …).
+  it.each([
+    ['IFCSURFACESTYLEREFRACTION', '#2=IFCSURFACESTYLEREFRACTION(42.,$);'],
+    ['IFCSURFACESTYLERENDERING',  '#2=IFCSURFACESTYLERENDERING(#3,0.5,$,$,$,$,$,$,$,$);'],
+    ['IFCCOLOURRGB',              '#2=IFCCOLOURRGB($,1.,0.,0.);'],
+  ])('keeps styling value %s as an entity', (_name, line) => {
+    const text = makeIfc(["#1=IFCPROJECT('p1',$,'P',$,$,$,$,(),$);", line]);
+    const m = extract(text);
+    expect(m.entities.has(2)).toBe(true);
+  });
+
   it('excludes IFCPOLYLOOP from entity index', () => {
     const text = makeIfc([
       "#1=IFCPROJECT('p1',$,'P',$,$,$,$,(),$);",
