@@ -150,18 +150,17 @@ export async function getElementInfo(uids: string[]): Promise<Record<string, Ele
     await awaitIngest(modelId);
     const conn = await db.connect();
     try {
-      // entity_ids are validated integers and modelId is bound, so the IN list
-      // is built from the placeholders only — no injection path.
-      const placeholders = [...ids].map(() => '?').join(', ');
+      // entity_ids are digits-only integers (groupUidsByModel), so they are inlined: a bulk export can
+      // ask for thousands, more than is sensible to bind one parameter each. modelId stays bound.
       const stmt = await conn.prepare(
         `SELECT entity_id, ifc_type, name, global_id,
                 bbox_min_x, bbox_min_y, bbox_min_z,
                 bbox_max_x, bbox_max_y, bbox_max_z
            FROM entities
-          WHERE model_id = ? AND entity_id IN (${placeholders})`,
+          WHERE model_id = ? AND entity_id IN (${[...ids].join(', ')})`,
       );
       try {
-        const res = await stmt.query(modelId, ...ids);
+        const res = await stmt.query(modelId);
         for (const raw of res.toArray()) {
           const row = raw as ElementInfoRow;
           out[`${modelId}:${entityIdOf(row)}`] = rowToElementInfo(modelId, row);
