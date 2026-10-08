@@ -3,6 +3,7 @@
 export { configureChecker, type CheckerAssets } from './config.js';
 export { loadIfcModel, unloadIfcModel, checkIds, restoreCachedModel, type LoadedIfcModel, type LoadOptions } from './check.js';
 export { listCachedModels, deleteCachedModel, clearModelCache, type CachedModelInfo } from './model-cache.js';
+export { getElementInfo, getModelInfo, type ElementBox, type ElementInfo, type ModelInfo } from './element-info.js';
 export { parseIds } from './ids/parse-ids.js';
 export { xsdToJs, xsdToRe2, hasClassSubtraction } from './ids/xsd-regex.js';
 export { evaluateDocument, evaluateSpec } from './ids/evaluate-ids.js';
