@@ -319,7 +319,7 @@ export function reportToHtml(
   table.summary-table { border-collapse: collapse; margin: 0 0 20px; width: 100%; max-width: 860px; }
   table.summary-table th, table.summary-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #eee; font-size: 12px; }
   table.summary-table th { color: #666; font-weight: 500; }
-  .bar { background: #eee; border-radius: 3px; height: 6px; margin: 0 0 10px; max-width: 720px; }
+  .bar { background: #eee; border-radius: 3px; height: 6px; margin: 0 0 10px; max-width: 720px; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   .bar-fill { background: #16a34a; border-radius: 3px; display: block; height: 6px; }
   details.group { margin: 0 0 10px; }
   details.group > summary { cursor: pointer; font-size: 12px; font-weight: 600; }
