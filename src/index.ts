@@ -7,5 +7,6 @@ export { getElementInfo, getModelInfo, type ElementBox, type ElementInfo, type M
 export { parseIds } from './ids/parse-ids.js';
 export { xsdToJs, xsdToRe2, hasClassSubtraction } from './ids/xsd-regex.js';
 export { evaluateDocument, evaluateSpec } from './ids/evaluate-ids.js';
-export { buildReportRows, reportToCsv, reportToHtml, type ModelNames, type ReportRow } from './ids/ids-report.js';
+export { buildReportRows, reportToCsv, reportToHtml, type ModelNames, type ReportHtmlOptions, type ReportRow } from './ids/ids-report.js';
+export { elementStatus, specProgress, isNotApplicable, type ElementStatus, type SpecProgress } from './ids/progress.js';
 export type * from './ids/types.js';

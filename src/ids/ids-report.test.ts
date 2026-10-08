@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildReportRows, reportToCsv, reportToHtml } from './ids-report.js';
-import type { IdsDocument, SpecResult } from './types.js';
+import type { EntityOutcome, FailureReason, IdsDocument, RequirementCheck, SpecResult } from './types.js';
 
 const doc: IdsDocument = {
   title: 'MyProject.ids',
@@ -141,5 +141,136 @@ describe('reportToHtml', () => {
     expect(buildReportRows(doc, results).find((r) => r.entityId === '10')?.modelId).toBe('m1');
     expect(reportToCsv(doc, results, { m1: 'house.ifc' })).toContain('house.ifc');
     expect(reportToHtml(doc, results, { m1: 'house.ifc' })).toContain('house.ifc');
+  });
+
+  it('omits N/A specs and reports how many were hidden when asked', () => {
+    const full = reportToHtml(doc, results);
+    expect(full).toContain('Not applicable to the loaded models.');
+    expect(full).not.toContain('not-applicable specification');
+
+    const hidden = reportToHtml(doc, results, {}, { hideNotApplicable: true });
+    expect(hidden).not.toContain('Not applicable to the loaded models.');
+    expect(hidden).toContain('1 not-applicable specification hidden');
+    // The omitted spec is gone from the summary table too.
+    expect(hidden).not.toContain('Not applicable spec');
+    expect(hidden).toContain('External walls');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Progress, summary table and element grouping
+// ---------------------------------------------------------------------------
+
+function check(index: number, passed: boolean): RequirementCheck {
+  return { requirement: `Req ${index}`, expected: 'required', index, passed };
+}
+
+function outcomeWith(uid: string, name: string, passed: boolean[]): EntityOutcome {
+  const failures: FailureReason[] = passed
+    .map((p, index) => ({ p, index }))
+    .filter(({ p }) => !p)
+    .map(({ index }) => ({ requirement: `Req ${index}`, expected: 'required', found: null }));
+  return { uid, ifcType: 'IFCWALL', name, failures, checks: passed.map((p, i) => check(i, p)) };
+}
+
+const progressDoc: IdsDocument = {
+  title: 'Progress.ids',
+  specifications: [
+    { id: 'p1', name: 'Walls', applicability: [], cardinality: 'required', requirements: [] },
+  ],
+};
+
+const progressResults: Record<string, SpecResult> = {
+  p1: {
+    specId: 'p1',
+    applicable: ['m1:1', 'm1:2', 'm1:3'],
+    passed: ['m1:3'],
+    failed: ['m1:1', 'm1:2'],
+    outcomes: {
+      'm1:1': outcomeWith('m1:1', 'Wall-1', [false, false]),
+      'm1:2': outcomeWith('m1:2', 'Wall-2', [true, false]),
+      'm1:3': outcomeWith('m1:3', 'Wall-3', [true, true]),
+    },
+    requirements: ['Req 0', 'Req 1'],
+    cardinalitySatisfied: true,
+    durationMs: 0,
+  },
+};
+
+describe('reportToHtml (progress)', () => {
+  const html = reportToHtml(progressDoc, progressResults);
+
+  it('renders a summary table with status, counts and requirement progress', () => {
+    expect(html).toContain('<th>Specification</th><th>Status</th>');
+    expect(html).toContain('<td class="bad">Fail</td>');
+    expect(html).toContain('3/6 (50%)');
+    // The row carries the element counts: one pass, one partial, one fail.
+    const row = html.slice(html.indexOf('<td>Walls</td>'), html.indexOf('</tr>', html.indexOf('<td>Walls</td>')));
+    expect(row.match(/<td>1<\/td>/g)).toHaveLength(3);
+  });
+
+  it('shows the pass · partial · fail summary and a progress bar', () => {
+    expect(html).toContain('1 pass');
+    expect(html).toContain('1 partial');
+    expect(html).toContain('1 fail');
+    expect(html).toContain('3 applicable');
+    expect(html).toContain('class="bar"');
+    expect(html).toContain('style="width: 50%"');
+  });
+
+  it('groups elements Fail → Partial → Pass, opening Fail and Partial only', () => {
+    const fail = html.indexOf('<summary>Fail (1)</summary>');
+    const partial = html.indexOf('<summary>Partial (1)</summary>');
+    const pass = html.indexOf('<summary>Pass (1)</summary>');
+    expect(fail).toBeGreaterThan(-1);
+    expect(partial).toBeGreaterThan(fail);
+    expect(pass).toBeGreaterThan(partial);
+    expect(html).toContain('<details class="group group-fail" open>');
+    expect(html).toContain('<details class="group group-partial" open>');
+    expect(html).toContain('<details class="group group-pass">');
+  });
+
+  it('classifies a partially-complete element and colours its border amber', () => {
+    const partialBlock = html.slice(
+      html.indexOf('<details class="group group-partial"'),
+      html.indexOf('<details class="group group-pass"'),
+    );
+    expect(partialBlock).toContain('Wall-2');
+    expect(partialBlock).toContain('class="item item-partial"');
+    expect(html).toContain('class="item item-fail"');
+    expect(html).toContain('class="item item-pass"');
+  });
+
+  it('lists every requirement check with ✓/✗ and highlights failed rows', () => {
+    expect(html).toContain('<th class="mark">✓/✗</th>');
+    expect(html).toContain('✓');
+    expect(html).toContain('✗');
+    expect(html).toContain('<tr class="failed">');
+    // Every check is present, passed ones included.
+    expect(html).toContain('Req 0');
+    expect(html).toContain('Req 1');
+  });
+
+  it('falls back to failures (all ✗) for outcomes without checks', () => {
+    const legacy: Record<string, SpecResult> = {
+      p1: {
+        ...progressResults.p1!,
+        outcomes: {
+          'm1:1': {
+            uid: 'm1:1',
+            ifcType: 'IFCWALL',
+            name: 'Wall-1',
+            failures: [{ requirement: 'Attribute Name', expected: 'required', found: null }],
+            checks: [],
+          },
+        },
+        applicable: ['m1:1'],
+        passed: [],
+        failed: ['m1:1'],
+      },
+    };
+    const out = reportToHtml(progressDoc, legacy);
+    expect(out).toContain('Attribute Name');
+    expect(out).toContain('<tr class="failed">');
   });
 });
